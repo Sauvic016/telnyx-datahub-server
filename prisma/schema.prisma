@@ -1,0 +1,591 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model contact_ai_profiles {
+  id                   String          @id @db.VarChar
+  contact_id           String          @unique @db.VarChar
+  last_active_phone_id String?         @db.VarChar
+  tone_profile         Json?           @db.Json
+  last_intent          String?         @db.VarChar
+  ai_tag_id            String?         @db.VarChar
+  ai_confidence        Float?
+  context_vector_id    String?         @db.VarChar
+  last_ai_updated_at   DateTime?       @db.Timestamptz(6)
+  tags                 tags?           @relation(fields: [ai_tag_id], references: [id], onUpdate: NoAction)
+  contacts             contacts        @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact_phones       contact_phones? @relation(fields: [last_active_phone_id], references: [id], onUpdate: NoAction)
+}
+
+model contact_number_ai_contexts {
+  contact_id         String         @db.VarChar
+  phone_id           String         @db.VarChar
+  tone_profile       Json?          @db.Json
+  last_intent        String?        @db.VarChar
+  ai_confidence      Float?
+  last_ai_updated_at DateTime?      @db.Timestamptz(6)
+  contacts           contacts       @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact_phones     contact_phones @relation(fields: [phone_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([contact_id, phone_id])
+}
+
+model contact_phone_telnyx {
+  id                       String                    @id @db.VarChar
+  contact_phone_id         String?                   @db.VarChar
+  telnyx_number_id         String?                   @db.VarChar
+  last_used_at             DateTime?                 @db.Timestamptz(6)
+  is_active                Boolean?
+  contact_phones           contact_phones?           @relation(fields: [contact_phone_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  telnyx_numbers           telnyx_numbers?           @relation(fields: [telnyx_number_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  conversation_ai_contexts conversation_ai_contexts?
+}
+
+model contact_phones {
+  id                         String                       @id @db.VarChar
+  contact_id                 String?                      @db.VarChar
+  phone_number               String?                      @db.VarChar
+  phone_type                 String?                      @db.VarChar
+  phone_status               String?                      @db.VarChar
+  phone_tags                 String?                      @db.VarChar
+  contact_ai_profiles        contact_ai_profiles[]
+  contact_number_ai_contexts contact_number_ai_contexts[]
+  contact_phone_telnyx       contact_phone_telnyx[]
+  contacts                   contacts?                    @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  job_targets                job_targets[]
+  telynxLookup               TelynxLookup?                @relation(fields: [telynxLookupId], references: [id])
+  telynxLookupId             Int?
+
+  @@index([phone_number])
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model contact_tag_association {
+  contact_id String   @db.VarChar
+  tag_id     String   @db.VarChar
+  contacts   contacts @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tags       tags     @relation(fields: [tag_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([contact_id, tag_id])
+}
+
+model contacts {
+  id                         String                       @id @db.VarChar
+  user_id                    String                       @db.VarChar
+  first_name                 String?                      @db.VarChar
+  last_name                  String?                      @db.VarChar
+  mailing_address            String?                      @db.VarChar
+  mailing_city               String?                      @db.VarChar
+  mailing_state              String?                      @db.VarChar
+  mailing_zip                String?                      @db.VarChar
+  deceased                   String?                      @db.VarChar // "Y" or "N" from DirectSkip
+  age                        String?                      @db.VarChar
+  contact_ai_profiles        contact_ai_profiles?
+  contact_number_ai_contexts contact_number_ai_contexts[]
+  contact_phones             contact_phones[]
+  contact_tag_association    contact_tag_association[]
+  webapp_users               webapp_users                 @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  inbound_messages           inbound_messages[]
+  job_targets                job_targets[]
+  outbound_messages          outbound_messages[]
+  property_details           property_details[]
+  directskips                DirectSkip?
+  relationsFrom              ContactRelation[]            @relation("ContactFrom")
+  relationsTo                ContactRelation[]            @relation("ContactTo")
+
+  @@unique([first_name, last_name, mailing_address], map: "uq_contact_identity")
+  @@index([first_name, last_name, mailing_address], map: "ix_contact_identity")
+}
+
+model ContactRelation {
+  fromContactId          String
+  toContactId            String
+  relationType           String?  @db.VarChar // spouse, partner, duplicate_of, relative, etc
+  confirmedBidirectional Boolean  @default(false) // Set to true when relationship seen from both sides
+  confirmationCount      Int      @default(1) // Increment each time relationship is re-discovered
+  firstSeenAt            DateTime @default(now())
+  lastConfirmedAt        DateTime @updatedAt
+
+  fromContact contacts @relation("ContactFrom", fields: [fromContactId], onDelete: Cascade, references: [id])
+  toContact   contacts @relation("ContactTo", fields: [toContactId], onDelete: Cascade, references: [id])
+
+  @@id([fromContactId, toContactId])
+}
+
+model DirectSkip {
+  id               Int              @id @default(autoincrement())
+  status           DirectSkipStatus
+  skipTracedAt     DateTime
+  contactId        String           @unique
+  contacts         contacts?        @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  confirmedAddress Json?            @db.Json
+}
+
+model conversation_ai_contexts {
+  id                              String                            @id @db.VarChar
+  link_id                         String?                           @unique @db.VarChar
+  is_enable                       Boolean?
+  conversation_state              conversation_state_enum           @default(active)
+  tone_profile                    Json?                             @db.Json
+  last_intent                     String?                           @db.VarChar
+  pillars_state                   Json?                             @db.Json
+  baseline_price                  Float?
+  lead_price                      Float?
+  follow_up_date                  DateTime?                         @db.Timestamptz(6)
+  reply_confidence                Float?
+  reply_intent                    String?                           @db.VarChar
+  last_price_checked_at           DateTime?                         @db.Timestamptz(6)
+  last_ai_updated_at              DateTime?                         @db.Timestamptz(6)
+  contact_phone_telnyx            contact_phone_telnyx?             @relation(fields: [link_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  conversation_ai_tag_association conversation_ai_tag_association[]
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model conversation_ai_tag_association {
+  conversation_ai_context_id String                   @db.VarChar
+  tag_id                     String                   @db.VarChar
+  conversation_ai_contexts   conversation_ai_contexts @relation(fields: [conversation_ai_context_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tags                       tags                     @relation(fields: [tag_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([conversation_ai_context_id, tag_id])
+}
+
+model conversation_ai_vectors {
+  id           String                 @id @db.VarChar
+  chat_key     String?                @db.VarChar
+  window_index Int?
+  window_text  String?                @db.VarChar
+  embedding    Unsupported("vector")?
+  metadata     Json?
+
+  @@index([chat_key], map: "ix_conversation_ai_vectors_chat_key")
+}
+
+model inbound_messages {
+  id                   String       @id @db.VarChar
+  user_id              String       @db.VarChar
+  contact_id           String?      @db.VarChar
+  messaging_profile_id String       @db.VarChar
+  text                 String
+  sender_phone         String       @db.VarChar
+  receiver_phone       String       @db.VarChar
+  seen                 Boolean?
+  received_at          DateTime?    @db.Timestamptz(6)
+  created_at           DateTime?    @db.Timestamptz(6)
+  ai_processed         Boolean?     @default(false)
+  ai_review_required   Boolean?     @default(false)
+  contacts             contacts?    @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  webapp_users         webapp_users @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([user_id, contact_id, seen], map: "ix_user_contact_seen")
+}
+
+model job_message_template_association {
+  job_message_id String       @db.VarChar
+  template_id    String       @db.VarChar
+  job_messages   job_messages @relation(fields: [job_message_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  templates      templates    @relation(fields: [template_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([job_message_id, template_id])
+}
+
+model job_messages {
+  id                               String                             @id @db.VarChar
+  job_id                           String                             @db.VarChar
+  job_time_slot_id                 String?                            @db.VarChar
+  sequence                         Int
+  delay_unit                       String?                            @db.VarChar
+  delay_seconds                    Int?
+  wait_between_sends_sec           Int?
+  start_time                       DateTime?                          @db.Timestamptz(6)
+  created_at                       DateTime?                          @db.Timestamptz(6)
+  job_message_template_association job_message_template_association[]
+  jobs                             jobs                               @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  job_time_slots                   job_time_slots?                    @relation(fields: [job_time_slot_id], references: [id], onUpdate: NoAction)
+  outbound_messages                outbound_messages[]
+}
+
+model job_targets {
+  id                String              @id @db.VarChar
+  job_id            String              @db.VarChar
+  contact_id        String              @db.VarChar
+  phone_id          String              @db.VarChar
+  property_id       String?             @db.VarChar
+  status            jobtargetstatus?
+  contacts          contacts            @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  jobs              jobs                @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact_phones    contact_phones      @relation(fields: [phone_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  property_details  property_details?   @relation(fields: [property_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  outbound_messages outbound_messages[]
+}
+
+model job_telnyx_association {
+  job_id           String         @db.VarChar
+  telnyx_number_id String         @db.VarChar
+  jobs             jobs           @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  telnyx_numbers   telnyx_numbers @relation(fields: [telnyx_number_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([job_id, telnyx_number_id])
+}
+
+model job_time_slots {
+  id           String         @id @db.VarChar
+  job_id       String         @db.VarChar
+  start_time   DateTime       @db.Time(6)
+  end_time     DateTime       @db.Time(6)
+  job_messages job_messages[]
+  jobs         jobs           @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model jobs {
+  id                     String                   @id @db.VarChar
+  name                   String                   @db.VarChar
+  user_id                String                   @db.VarChar
+  job_type               String?                  @db.VarChar
+  status                 jobstatus?
+  start_time             DateTime?                @db.Timestamp(6)
+  created_at             DateTime?                @db.Timestamptz(6)
+  last_run_at            DateTime?                @db.Timestamp(6)
+  notes                  String?
+  job_messages           job_messages[]
+  job_targets            job_targets[]
+  job_telnyx_association job_telnyx_association[]
+  job_time_slots         job_time_slots[]
+  webapp_users           webapp_users             @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  outbound_messages      outbound_messages[]
+}
+
+model macros {
+  id           String       @id @db.VarChar
+  user_id      String       @db.VarChar
+  name         String       @unique @db.VarChar
+  description  String?      @db.VarChar
+  created_at   DateTime?    @db.Timestamptz(6)
+  webapp_users webapp_users @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model outbound_messages {
+  id                   String         @id @db.VarChar
+  user_id              String         @db.VarChar
+  contact_id           String         @db.VarChar
+  job_id               String?        @db.VarChar
+  message_id           String?        @db.VarChar
+  target_id            String?        @db.VarChar
+  template_id          String?        @db.VarChar
+  telnyx_sms_id        String?        @db.VarChar
+  messaging_profile_id String?        @db.VarChar
+  text                 String
+  status               messagestatus?
+  detail               String?        @db.VarChar
+  detail_url           String?        @db.VarChar
+  sender_phone         String         @db.VarChar
+  receiver_phone       String         @db.VarChar
+  created_at           DateTime?      @db.Timestamptz(6)
+  ai_generated         Boolean?       @default(false)
+  ai_confidence        Float?
+  ai_review_required   Boolean?       @default(false)
+  ai_model             String?        @db.VarChar(255)
+  ai_metadata          String?
+  ai_alternatives      Json?
+  contacts             contacts       @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  jobs                 jobs?          @relation(fields: [job_id], references: [id], onUpdate: NoAction)
+  job_messages         job_messages?  @relation(fields: [message_id], references: [id], onUpdate: NoAction)
+  job_targets          job_targets?   @relation(fields: [target_id], references: [id], onUpdate: NoAction)
+  templates            templates?     @relation(fields: [template_id], references: [id], onUpdate: NoAction)
+  webapp_users         webapp_users   @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model property_details {
+  id                            String         @id @db.VarChar
+  contact_id                    String?        @db.VarChar
+  property_address              String?        @db.VarChar
+  property_city                 String?        @db.VarChar
+  property_state                String?        @db.VarChar
+  property_zip                  String?        @db.VarChar
+  list_stack                    String?        @db.VarChar
+  bedrooms                      String?        @db.VarChar
+  bathrooms                     String?        @db.VarChar
+  sqft                          String?        @db.VarChar
+  air_conditioner               String?        @db.VarChar
+  heating_type                  String?        @db.VarChar
+  storeys                       String?        @db.VarChar
+  year                          String?        @db.VarChar
+  above_grade                   String?        @db.VarChar
+  rental_value                  String?        @db.VarChar
+  building_use_code             String?        @db.VarChar
+  neighborhood_rating           String?        @db.VarChar
+  structure_type                String?        @db.VarChar
+  number_of_units               String?        @db.VarChar
+  apn                           String?        @db.VarChar
+  parcel_id                     String?        @db.VarChar
+  legal_description             String?        @db.VarChar
+  lot_size                      String?        @db.VarChar
+  land_zoning                   String?        @db.VarChar
+  tax_auction_date              String?        @db.VarChar
+  total_taxes                   String?        @db.VarChar
+  tax_delinquent_value          String?        @db.VarChar
+  tax_delinquent_year           String?        @db.VarChar
+  year_behind_on_taxes          String?        @db.VarChar
+  deed                          String?        @db.VarChar
+  mls                           String?        @db.VarChar
+  last_sale_price               String?        @db.VarChar
+  last_sold                     String?        @db.VarChar
+  lien_type                     String?        @db.VarChar
+  lien_recording_date           String?        @db.VarChar
+  personal_representative       String?        @db.VarChar
+  personal_representative_phone String?        @db.VarChar
+  probate_open_date             String?        @db.VarChar
+  attorney_on_file              String?        @db.VarChar
+  foreclosure_date              String?        @db.VarChar
+  bankruptcy_recording_date     String?        @db.VarChar
+  divorce_file_date             String?        @db.VarChar
+  loan_to_value                 String?        @db.VarChar
+  open_mortgages                String?        @db.VarChar
+  mortgage_type                 String?        @db.VarChar
+  owned_since                   String?        @db.VarChar
+  estimated_value               String?        @db.VarChar
+  job_targets                   job_targets[]
+  contacts                      contacts?      @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lists                         PropertyList[]
+}
+
+model tags {
+  id                              String                            @id @db.VarChar
+  user_id                         String                            @db.VarChar
+  name                            String                            @unique @db.VarChar
+  description                     String?                           @db.VarChar
+  color                           String?                           @db.VarChar
+  created_at                      DateTime?                         @db.Timestamptz(6)
+  contact_ai_profiles             contact_ai_profiles[]
+  contact_tag_association         contact_tag_association[]
+  conversation_ai_tag_association conversation_ai_tag_association[]
+  webapp_users                    webapp_users                      @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model telnyx_numbers {
+  id                     String                   @id @db.VarChar
+  phone_number           String                   @unique @db.VarChar
+  messaging_profile_id   String                   @db.VarChar
+  label                  String?                  @db.VarChar
+  is_active              Boolean?
+  last_sent_at           DateTime?                @db.Timestamptz(6)
+  recent_send_count      Int?
+  contact_phone_telnyx   contact_phone_telnyx[]
+  job_telnyx_association job_telnyx_association[]
+}
+
+model templates {
+  id                               String                             @id @db.VarChar
+  name                             String?                            @db.VarChar
+  text                             String
+  created_by_id                    String?                            @db.VarChar
+  created_at                       DateTime?                          @default(now()) @db.Timestamptz(6)
+  job_message_template_association job_message_template_association[]
+  outbound_messages                outbound_messages[]
+  webapp_users                     webapp_users?                      @relation(fields: [created_by_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model webapp_user_ai_profiles {
+  id                 String       @id @db.VarChar
+  user_id            String       @unique @db.VarChar
+  tone_profile       Json?        @db.Json
+  writing_style      Json?        @db.Json
+  ai_embedding_ref   String?      @db.VarChar
+  confidence         Float?
+  last_ai_updated_at DateTime?    @db.Timestamptz(6)
+  webapp_users       webapp_users @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model webapp_users {
+  id                      String                   @id @db.VarChar
+  email                   String                   @unique @db.VarChar
+  password_hash           String                   @db.VarChar
+  created_at              DateTime?                @default(now()) @db.Timestamptz(6)
+  contacts                contacts[]
+  inbound_messages        inbound_messages[]
+  jobs                    jobs[]
+  macros                  macros[]
+  outbound_messages       outbound_messages[]
+  tags                    tags[]
+  templates               templates[]
+  webapp_user_ai_profiles webapp_user_ai_profiles?
+}
+
+model BotJobs {
+  jobId          Int      @id
+  status         String
+  currentBotId   Int?
+  startedByBotId Int?
+  type           JobType
+  serverIp       String
+  createdAt      DateTime
+  updatedAt      DateTime
+  resultFilePath String?
+}
+
+model Pipeline {
+  identityKey String @id
+
+  // This single field replaces BotOutputRowDecision.status
+  decision RowDecisionStatus @default(PENDING)
+
+  // Pipeline state
+  stage ProcessingStage @default(PENDING)
+
+  error     String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+model TelynxLookup {
+  id Int @id @default(autoincrement())
+
+  // top-level fields
+  country_code    String?
+  national_format String?
+  phone_number    String? @unique
+  record_type     String?
+
+  // caller_name.*
+  caller_name_caller_name String?
+  caller_name_error_code  String?
+
+  // carrier.*
+  carrier_error_code          String?
+  carrier_mobile_country_code String?
+  carrier_mobile_network_code Int?
+  carrier_name                String?
+  carrier_type                String?
+
+  // portability.*
+  portability_altspid              String?
+  portability_altspid_carrier_name String?
+  portability_altspid_carrier_type String?
+  portability_city                 String?
+  portability_line_type            String?
+  portability_lrn                  String?
+  portability_ocn                  String?
+  portability_ported_date          DateTime?
+  portability_ported_status        String?
+  portability_spid                 String?
+  portability_spid_carrier_name    String?
+  portability_spid_carrier_type    String?
+  portability_state                String?
+
+  // fraud (null for now)
+  fraud_error String? // keeping 1D requirement, can add more later
+
+  // caller ID classification based on caller name matching
+  caller_id String? // IDMATCH, WC, NoID, Wrong Number
+
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  contactPhones contact_phones[]
+}
+
+model DirectSkipBatch {
+  id              String                @id @default(uuid()) @db.VarChar
+  rowCount        Int
+  status          DirectSkipBatchStatus @default(PENDING)
+  submittedAt     DateTime              @default(now())
+  completedAt     DateTime?
+  directSkipJobId String?               @db.VarChar // ID returned by DirectSkip server
+  error           String?
+  responseData    Json? // Store full response from DirectSkip
+}
+
+model List {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  properties PropertyList[] // join rows
+}
+
+model PropertyList {
+  propertyId String
+  property   property_details @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  list   List @relation(fields: [listId], references: [id], onDelete: Cascade)
+  listId Int
+
+  @@id([propertyId, listId])
+}
+
+enum ProcessingStage {
+  PENDING
+  APPROVED // row approved by user (mirrors decision but not required)
+
+  SENT_TO_DIRECTSKIP
+  DIRECTSKIP_PROCESSING
+  DIRECTSKIP_COMPLETED
+  DIRECTSKIP_FAILED
+
+  NUMBERLOOKUP_PROCESSING
+  NUMBERLOOKUP_COMPLETED
+  NUMBERLOOKUP_FAILED
+}
+
+enum DirectSkipStatus {
+  PENDING
+  STARTED
+  FAILED
+  COMPLETED
+}
+
+enum RowDecisionStatus {
+  APPROVED
+  REJECTED
+  PENDING
+}
+
+enum JobType {
+  MANUAL
+  AUTOMATED
+}
+
+enum DirectSkipBatchStatus {
+  PENDING
+  SUBMITTED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum conversation_state_enum {
+  active
+  waiting
+  closed
+  error
+}
+
+enum jobstatus {
+  draft
+  scheduled
+  processing
+  stopped
+  completed
+}
+
+enum jobtargetstatus {
+  pending
+  in_progress
+  completed
+  replied
+  failed
+  skipped
+}
+
+enum messagestatus {
+  sent
+  queued
+  failed
+  sending
+  delivered
+  undelivered
+}
