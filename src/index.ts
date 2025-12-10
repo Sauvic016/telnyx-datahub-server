@@ -19,6 +19,7 @@ import { processSkipTraceResponse } from "./services/skip-trace-processing";
 import listsRouter from "./routes/lists";
 import { getCompletedData } from "./services/completed-data";
 import { BOTMAP } from "./utils/constants";
+import { ScrappedData } from "./models/ScrappedData";
 
 const app = express();
 
@@ -164,8 +165,6 @@ app.post("/receive", upload.array("files"), async (req, res) => {
   }
 });
 
-import { filterRecords } from "./services/record-filter";
-
 // ... (existing imports)
 
 app.get("/records", async (req, res) => {
@@ -272,7 +271,7 @@ app.get("/new-data-records", async (req, res) => {
 app.post("/decisions", async (req, res) => {
   try {
     const body = req.body;
-    let decisionsToProcess: any[] = [];
+    let identityKeyList: any[] = [];
 
     // Check if it's a bulk request
     if (body.isBulk) {
@@ -282,183 +281,63 @@ app.post("/decisions", async (req, res) => {
       const dataType = (filter?.dataType as string as "all" | "clean" | "incomplete") || "all";
       const listId = filter?.listId;
       const startedByBot = filter?.startedByBot;
-
       const filterObject = Object.fromEntries(
         Object.entries({
           listId,
           botId: startedByBot ? Number(startedByBot) : undefined,
         }).filter(([_, v]) => v !== undefined)
       );
-
       const { items, total } = await recordGetter(1, limit, dataType, filterObject);
-      // 1. Fetch all records
-      // let { incompleteRecords, cleanRecords, allRecords } = await recordService();
-
-      // // 2. Apply filtersN
-      // const filteredRecords = await filterRecords(allRecords, cleanRecords, incompleteRecords, {
-      //   listId: filter?.listId,
-      //   startedByBot: filter?.startedByBot,
-      //   dataType: filter?.dataType || "all"
-      // });
-
-      // // 3. Apply limit
-      // let targetRecords = filteredRecords;
-      // if (limit && limit !== "all") {
-      //   const limitNum = parseInt(limit);
-      //   if (!isNaN(limitNum) && limitNum > 0) {
-      //     targetRecords = filteredRecords.slice(0, limitNum);
-      //   }
-      // }
-
-      // console.log(`[/decisions] Bulk matched ${targetRecords.length} records (Limit: ${limit})`);
-      console.log(items)
-      // // 4. Map to decision objects
-      decisionsToProcess = items.map((r: any) => ({
-        identityKey: r.identityKey, // Assuming recordService returns identityKey or we need to construct it
-        firstName: r.owner_first_name,
-        lastName: r.owner_last_name,
-        mailingAddress: r.owner_mailing_address,
-        decision: decision,
-        // jobId, rowUuid might be missing in bulk view, but identityKey is key
-      }));
-
-      console.log(decisionsToProcess)
+      identityKeyList = items.map((r: any) => r.identityKey);
     } else {
-      // Standard array of decisions
-      decisionsToProcess = body;
+      identityKeyList = body.map((b: any) => b.identityKey);
+      console.log("single ", identityKeyList);
     }
 
-    // Accept identityKey or identity fields
-    const decisions = decisionsToProcess as Array<{
-      identityKey?: string;
-      firstName?: string;
-      lastName?: string;
-      mailingAddress?: string;
-      decision: string; // "APPROVED" | "REJECTED" | "PENDING"
-      jobId?: number; // Optional: for DirectSkip batching
-      rowUuid?: string; // Optional: for DirectSkip batching
-    }>;
-
-    if (!Array.isArray(decisions)) {
+    if (!identityKeyList.length) {
       return res.status(400).json({
-        error: "Body must be an array of decision objects or a bulk decision payload",
+        error: "Identity list cannot be empty, select atleast one record",
       });
     }
 
-    console.log(`[/decisions] Processing ${decisions.length} decisions`);
-
-    let savedCount = 0;
-    const approvedIdentityKeys: string[] = [];
-
-    // Save decisions to Postgres and collect approved records
-    await prisma.$transaction(async (tx) => {
-      for (const item of decisions) {
-        const { decision, jobId, rowUuid } = item;
-
-        // Compute or extract identityKey
-        let identityKey: string;
-        if (item.identityKey) {
-          identityKey = item.identityKey;
-        } else if (item.firstName && item.lastName && item.mailingAddress) {
-          identityKey = makeIdentityKey(item.firstName, item.lastName, item.mailingAddress);
-        } else {
-          // If we are in bulk mode, records from recordService might not have identityKey pre-calculated?
-          // recordService returns what checkForContacts returns.
-          // We should ensure we can get identityKey.
-          // If not, we skip.
-          console.warn("[/decisions] Skipping item - missing identityKey or identity fields");
-          continue;
-        }
-
-        // Map "decision" to RowDecisionStatus enum
-        const decisionStatus = (decision?.toUpperCase() || "APPROVED") as RowDecisionStatus;
-
-        await tx.pipeline.upsert({
-          where: {
-            identityKey,
-          },
+    await prisma.$transaction(
+      identityKeyList.map((key) =>
+        prisma.pipeline.upsert({
+          where: { identityKey: key },
           update: {
-            decision: decisionStatus,
-            stage: decisionStatus === "APPROVED" ? ProcessingStage.APPROVED : ProcessingStage.PENDING,
+            decision: ProcessingStage.APPROVED,
+            stage: ProcessingStage.APPROVED,
             updatedAt: new Date(),
           },
-          create: {
-            identityKey,
-            decision: decisionStatus,
-            stage: decisionStatus === "APPROVED" ? ProcessingStage.APPROVED : ProcessingStage.PENDING,
-          },
-        });
-        savedCount++;
-
-        // Collect approved identityKeys for DirectSkip
-        if (decisionStatus === "APPROVED") {
-          approvedIdentityKeys.push(identityKey);
-        }
+          create: { identityKey: key, decision: ProcessingStage.APPROVED, stage: ProcessingStage.APPROVED },
+        })
+      )
+    );
+    await ScrappedData.updateMany(
+      { identityKey: { $in: identityKeyList } },
+      {
+        $set: {
+          decision: ProcessingStage.APPROVED,
+          stage: ProcessingStage.APPROVED,
+        },
       }
-    });
+    );
 
-    console.log(`[/decisions] Saved ${savedCount} decisions to database`);
-
-    // Send approved records to DirectSkip server (async/non-blocking)
-    let batchIds: string[] = [];
-
-    if (approvedIdentityKeys.length > 0) {
-      console.log(`[/decisions] Found ${approvedIdentityKeys.length} approved record(s)`);
-
-      try {
-        batchIds = await sendApprovedToDirectSkip(approvedIdentityKeys);
-        console.log(`[/decisions] ✅ Created ${batchIds.length} DirectSkip batch(es)`);
-      } catch (error) {
-        console.error("[/decisions] ❌ Failed to create DirectSkip batches:", error);
-        return res.status(500).json({
-          error: "Decisions saved but failed to create DirectSkip batches",
-          saved: savedCount,
-          details: error instanceof Error ? error.message : "Unknown error",
-        });
-      }
+    try {
+      await sendApprovedToDirectSkip(identityKeyList);
+    } catch (error) {
+      console.error("[/decisions] ❌ Failed to create DirectSkip batches:", error);
+      return res.status(500).json({
+        error: "Decisions saved but failed to create DirectSkip batches",
+        details: error instanceof Error ? error.message : "Unknown error",
+      });
     }
-
-    // Calculate breakdown by decision type
-    const breakdown = {
-      approved: 0,
-      rejected: 0,
-      pending: 0,
-    };
-
-    decisions.forEach((d) => {
-      const status = (d.decision?.toUpperCase() || "APPROVED") as RowDecisionStatus;
-      if (status === "APPROVED") breakdown.approved++;
-      else if (status === "REJECTED") breakdown.rejected++;
-      else if (status === "PENDING") breakdown.pending++;
-    });
-
     res.json({
       success: true,
       summary: {
-        total: savedCount,
-        breakdown,
+        total: identityKeyList.length,
       },
-      directSkip: {
-        batchIds,
-        recordsQueued: approvedIdentityKeys.length,
-        status: batchIds.length > 0 ? "processing" : "none",
-      },
-      updatedRecords: decisions.map((d) => {
-        const identityKey =
-          d.identityKey ||
-          (d.firstName && d.lastName && d.mailingAddress
-            ? makeIdentityKey(d.firstName, d.lastName, d.mailingAddress)
-            : "unknown");
-        return {
-          identityKey,
-          newStatus: (d.decision?.toUpperCase() || "APPROVED") as RowDecisionStatus,
-          sentToDirectSkip: d.decision?.toUpperCase() === "APPROVED",
-        };
-      }),
-      message:
-        batchIds.length > 0
-          ? `${savedCount} decision(s) saved. ${breakdown.approved} record(s) queued for DirectSkip processing.`
-          : `${savedCount} decision(s) saved.`,
+      message: `${identityKeyList.length} record(s) queued for DirectSkip processing.`,
     });
   } catch (error) {
     console.error("Error in /decisions:", error);
@@ -469,63 +348,16 @@ app.post("/decisions", async (req, res) => {
 // Webhook endpoint to receive DirectSkip status updates
 app.post("/webhook/directskip", async (req, res) => {
   try {
-    const { batchId, directSkipJobId, status, completedCount, failedCount, error, results } = req.body;
-
-    console.log(`[Webhook] Received DirectSkip update for batch ${batchId}`);
-    console.log(`[Webhook] Status: ${status}, Completed: ${completedCount}, Failed: ${failedCount}`);
-
-    if (!batchId) {
-      return res.status(400).json({ error: "Missing batchId" });
-    }
-
-    // Find the batch
-    const batch = await prisma.directSkipBatch.findUnique({
-      where: { id: batchId },
-    });
-
-    if (!batch) {
-      console.warn(`[Webhook] Batch ${batchId} not found`);
-      return res.status(404).json({ error: "Batch not found" });
-    }
-
-    // Map webhook status to our enum
-    let batchStatus: "PENDING" | "SUBMITTED" | "PROCESSING" | "COMPLETED" | "FAILED" = "PROCESSING";
-
-    if (status === "completed" || status === "COMPLETED") {
-      batchStatus = "COMPLETED";
-    } else if (status === "failed" || status === "FAILED") {
-      batchStatus = "FAILED";
-    } else if (status === "processing" || status === "PROCESSING") {
-      batchStatus = "PROCESSING";
-    }
-
-    // Update batch in database
-    await prisma.directSkipBatch.update({
-      where: { id: batchId },
-      data: {
-        status: batchStatus,
-        directSkipJobId: directSkipJobId || batch.directSkipJobId,
-        completedAt: batchStatus === "COMPLETED" || batchStatus === "FAILED" ? new Date() : batch.completedAt,
-        error: error || batch.error,
-        responseData: results || batch.responseData,
-      },
-    });
-
-    console.log(`[Webhook] ✅ Updated batch ${batchId} to status ${batchStatus}`);
-
-    // Acknowledge webhook
-    res.json({
-      status: "ok",
-      batchId,
-      acknowledged: true,
-    });
-    // Fire and forget processing
     // Fire and forget processing only if results exist
+    const results = req.body;
     if (results && Array.isArray(results) && results.length > 0) {
       processSkipTraceResponse(results).catch((err) => {
         console.error("[Webhook] Error processing skip trace results:", err);
       });
     }
+    res.status(200).json({
+      status: "ok",
+    });
   } catch (error) {
     console.error("[Webhook] Error processing DirectSkip webhook:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -589,6 +421,37 @@ app.get("/completed-data", async (req, res) => {
     });
   } catch (error) {
     console.error("Error in /completed-data:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.get("/record-detail/:id", async (req, res) => {
+  const contactId = req.params.id;
+
+  try {
+    const contact = await prisma.contacts.findUnique({
+      where: { id: contactId },
+      include: {
+        contact_phones: true,
+        property_details: {
+          include: {
+            lists: {
+              include: {
+                list: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!contact) {
+      return res.status(404).json({ error: "Contact not found" });
+    }
+
+    res.json(contact);
+  } catch (error) {
+    console.error("Error fetching contact details:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

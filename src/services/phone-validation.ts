@@ -8,6 +8,8 @@ export interface PhoneValidationParams {
   contactId: string;
   phoneNumber: string;
   phoneType: string;
+  isMainContact: boolean;
+  count: number;
 }
 
 export interface PhoneValidationResult {
@@ -21,11 +23,7 @@ export interface PhoneValidationResult {
  * Classifies the caller ID based on caller name matching with contact's name.
  * Returns: IDMATCH, WC, NoID, or Wrong Number
  */
-function classifyCallerId(
-  callerName: string | null | undefined,
-  firstName: string,
-  lastName: string
-): string {
+function classifyCallerId(callerName: string | null | undefined, firstName: string, lastName: string): string {
   const callerNameArr = (callerName || "")
     .replace(/,/g, " ")
     .split(" ")
@@ -39,10 +37,7 @@ function classifyCallerId(
     return "IDMATCH";
   } else if (callerNameArr.includes("wireless") && callerNameArr.includes("caller")) {
     return "WC";
-  } else if (
-    callerNameArr.length === 0 ||
-    callerNameArr.some((n) => us_state.includes(n))
-  ) {
+  } else if (callerNameArr.length === 0 || callerNameArr.some((n) => us_state.includes(n))) {
     return "NoID";
   } else {
     return "Wrong Number";
@@ -65,7 +60,7 @@ function classifyCallerId(
  * @returns PhoneValidationResult indicating success/failure and reason
  */
 export async function validateAndStorePhone(params: PhoneValidationParams): Promise<PhoneValidationResult> {
-  const { contactId, phoneNumber, phoneType } = params;
+  const { contactId, phoneNumber, phoneType, isMainContact, count } = params;
 
   try {
     // Normalize phone number (digits only)
@@ -87,10 +82,7 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
     const existingForContact = await prisma.contact_phones.findFirst({
       where: {
         contact_id: contactId,
-        OR: [
-          { phone_number: e164 },
-          { phone_number: normalized }
-        ]
+        OR: [{ phone_number: e164 }, { phone_number: normalized }],
       },
     });
 
@@ -106,10 +98,7 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
     // Check BOTH formats
     const existingLookup = await prisma.telynxLookup.findFirst({
       where: {
-        OR: [
-          { phone_number: e164 },
-          { phone_number: normalized }
-        ]
+        OR: [{ phone_number: e164 }, { phone_number: normalized }],
       },
     });
 
@@ -125,6 +114,7 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
           phone_number: e164, // Always store as E.164
           phone_type: phoneType,
           phone_status: "active",
+          phone_tags: isMainContact ? `DS${count}` : "",
           telynxLookupId: existingLookup.id, // Link to existing lookup
         },
       });
@@ -164,7 +154,9 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
     // Calculate caller_id classification
     const callerName = telnyxResult.data!.caller_name?.caller_name;
     const callerId = classifyCallerId(callerName, firstName, lastName);
-    console.log(`[PhoneValidation] Caller ID classification: ${callerId} (callerName: ${callerName}, firstName: ${firstName}, lastName: ${lastName})`);
+    console.log(
+      `[PhoneValidation] Caller ID classification: ${callerId} (callerName: ${callerName}, firstName: ${firstName}, lastName: ${lastName})`
+    );
 
     await prisma.$transaction(async (tx) => {
       // 1. Upsert TelynxLookup record (handles race condition)
@@ -228,6 +220,7 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
           phone_number: e164, // Always store as E.164
           phone_type: phoneType,
           phone_status: "active",
+          phone_tags: isMainContact ? `DS${count}` : "",
           telynxLookupId: lookupRecord.id, // Link to lookup record
         },
       });
