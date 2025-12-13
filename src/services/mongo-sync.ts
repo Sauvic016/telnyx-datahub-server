@@ -4,6 +4,92 @@ import pl from "nodejs-polars";
 import { getLatestJobsPerBot, getAllJobs } from "../utils/helper";
 import { ScrappedData } from "../models/ScrappedData";
 
+const mongoToPropertyDetailsMap: Record<string, string> = {
+  // ─── PROPERTY ADDRESS ───────────────────────────
+  property_address: "property_address",
+  property_city: "property_city",
+  property_state: "property_state",
+  property_zip: "property_zip_code",
+  property_zip_code: "property_zip_code",  // CSV variation
+  list_stack: "list_stack",
+
+  // ─── PROPERTY CHARACTERISTICS ───────────────────
+  bedrooms: "bedrooms",
+  bathrooms: "bathrooms",
+  sqft: "square_feet",
+  square_feet: "square_feet",  // CSV variation
+  air_conditioner: "air_conditioner",
+  heating_type: "heat",
+  heat: "heat",  // CSV variation
+  storeys: "storeys",
+  year: "year_built",
+  year_built: "year_built",  // CSV variation
+  above_grade: "above_grade",
+  rental_value: "rental_value",
+
+  // ─── PROPERTY CLASSIFICATION ────────────────────
+  building_use_code: "land_use_code",
+  land_use_code: "land_use_code",  // CSV variation
+  neighborhood_rating: "cdu",
+  cdu: "cdu",  // CSV variation
+  structure_type: "structure_type",
+  number_of_units: "number_of_units",
+
+  // ─── LAND / PARCEL ──────────────────────────────
+  apn: "apn",
+  parcel_id: "parcel",
+  parcel: "parcel",  // CSV variation
+  legal_description: "legal_description",
+  lot_size: "lot_size",
+  land_zoning: "land_zoning",
+
+  // ─── TAX DATA ───────────────────────────────────
+  tax_auction_date: "tax_auction_date",
+  total_taxes: "total_taxes",
+  tax_delinquent_value: "tax_delinquent_amount",
+  tax_delinquent_amount: "tax_delinquent_amount",  // CSV variation
+  tax_delinquent_year: "tax_delinquent_year",
+  year_behind_on_taxes: "years_delinquent",
+  years_delinquent: "years_delinquent",  // CSV variation
+
+  // ─── DEED / MLS ─────────────────────────────────
+  deed: "deed",
+  mls: "mls",
+
+  // ─── SALE HISTORY ───────────────────────────────
+  last_sale_price: "last_sale_price",
+  last_sold: "last_sale_date",
+  last_sale_date: "last_sale_date",  // CSV variation
+  previous_sale_date: "previous_sale_date",
+  previous_sale_price: "previous_sale_price",
+
+  // ─── LIENS / LEGAL EVENTS ───────────────────────
+  lien_type: "tax_lien",
+  tax_lien: "tax_lien",  // CSV variation
+  lien_recording_date: "lien_recording_date",
+
+  personal_representative: "personal_representative",
+  personal_representative_phone: "personal_representative_phone",
+  probate_open_date: "probate_open_date",
+  attorney_on_file: "attorney_on_file",
+
+  foreclosure_date: "foreclosure_date",
+  foreclosure: "foreclosure",  // CSV variation
+  bankruptcy_recording_date: "bankruptcy_recording_date",
+  bankruptcy: "bankruptcy",  // CSV variation
+  divorce_file_date: "divorce_file_date",
+
+  // ─── MORTGAGE DATA ──────────────────────────────
+  loan_to_value: "loan_to_value",
+  open_mortgages: "open_mortgages",
+  mortgage_type: "mortgage_type",
+
+  // ─── OWNERSHIP / VALUE ──────────────────────────
+  owned_since: "previous_sale_date",
+  estimated_value: "estimated_value"
+};
+
+
 function pickColumn(columns: string[], candidates: string[]): string | null {
   const normalize = (s: string) => s.trim().toLowerCase().replace(/^"|"$/g, "");
   const lowerCols = columns.map(normalize);
@@ -175,15 +261,24 @@ export const syncScrappedData = async () => {
             inPostgres: inPostgres,
             prevList: [],
             currList: [],
+            property_datas: [],
             isListChanged: false,
           };
 
+          let property_data: Record<string, any> = {}
           // Add all CSV columns to the document
           cols.forEach((col, idx) => {
             const value = row[idx];
 
-            // Normalize column name to check if it's a list field
-            const normalizedCol = col.trim().toLowerCase().replace(/^"|"$/g, "");
+            // Normalize column name to check if it's a list field or property field
+            const normalizedCol = col
+              .trim()
+              .replace(/^"|"$/g, "")
+              .toLowerCase()
+              .replace(/[\s\/\-\.]+/g, "_")
+              .replace(/[^a-z0-9_]/g, "")
+              .replace(/_+/g, "_")
+              .replace(/^_|_$/g, "");
 
             // Convert null/empty values to empty string for list fields
             if (normalizedCol === "list" || normalizedCol === "lists") {
@@ -196,7 +291,7 @@ export const syncScrappedData = async () => {
                       .map((item: string) => item.trim());
               if (docData["prevList"].length !== docData["currList"].length) {
                 docData["isListChanged"] = true;
-              } else {
+              }  else {
                 const prevSet = new Set(docData["prevList"]);
                 const currSet = new Set(docData["currList"]);
                 const areSame =
@@ -204,7 +299,12 @@ export const syncScrappedData = async () => {
                   docData["currList"].every((item: string) => prevSet.has(item));
                 docData["isListChanged"] = !areSame;
               }
-            } else {
+            }
+          
+            if (normalizedCol in mongoToPropertyDetailsMap) {
+                property_data[mongoToPropertyDetailsMap[normalizedCol]] = value;
+              }
+            else {
              let colKey = col
   .trim()
               .replace(/^"|"$/g, "")           // Remove leading/trailing quotes
@@ -216,6 +316,8 @@ export const syncScrappedData = async () => {
               docData[colKey] = value;
             }
           });
+
+          docData.property_datas.push(property_data);
 
           await ScrappedData.findOneAndUpdate(
             { identityKey }, // Filter by unique key

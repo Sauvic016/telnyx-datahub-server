@@ -36,7 +36,7 @@ export function pickField(doc: any, candidates: string[]): string {
  */
 interface IRecordFilter {
   botId?: number;
-  listId?: number;
+  listName?: string;
   isListChanged?: boolean;
 }
 const recordGetter = async (
@@ -50,7 +50,9 @@ const recordGetter = async (
   // Build match object dynamically
   const match: any = {};
   if (filter?.botId !== undefined) match.botId = filter.botId;
-  if (filter?.listId !== undefined) match.listId = filter.listId;
+  if (filter?.listName) {
+    match.currList = { $regex: filter.listName, $options: "i" };
+  }
   if (filter?.isListChanged !== undefined) match.isListChanged = filter.isListChanged;
 
   const pipeline: any = [];
@@ -84,36 +86,6 @@ const recordGetter = async (
 
   const items = result[0].data;
   const total = result[0].totalCount[0]?.count || 0;
-
-  // Collect all identityKeys for items in Postgres
-  // const identityKeys = items.filter((item: any) => item.inPostgres).map((item: any) => item.identityKey);
-
-  // Batch fetch pipeline records
-  // const pipelines =
-  //   identityKeys.length > 0
-  //     ? await prisma.pipeline.findMany({
-  //         where: { identityKey: { in: identityKeys } },
-  //         select: { identityKey: true, stage: true, decision: true },
-  //       })
-  //     : [];
-
-  // Build a lookup map
-  // const pipelineMap = new Map(pipelines.map((p) => [p.identityKey, p]));
-
-  // Map items synchronously
-  // const itemsWithStageandStatus = items.map((item: any) => {
-  //   if (item.inPostgres) {
-  //     const pipelineResult = pipelineMap.get(item.identityKey);
-  //     if (pipelineResult) {
-  //       const { stage, decision } = pipelineResult;
-  //       return { ...item, stage, decision };
-  //     } else {
-  //       return { ...item, stage: null, decision: null };
-  //     }
-  //   } else {
-  //     return { ...item, stage: null, decision: null };
-  //   }
-  // });
 
   return { items, total };
 };

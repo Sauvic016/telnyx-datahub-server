@@ -17,7 +17,7 @@ import router from "./routes/bot-jobs";
 import jobSyncRouter from "./routes/job-sync";
 import { processSkipTraceResponse } from "./services/skip-trace-processing";
 import listsRouter from "./routes/lists";
-import { getCompletedData } from "./services/completed-data";
+import { getCompletedData, getCompletedDataForContactId } from "./services/completed-data";
 import { BOTMAP } from "./utils/constants";
 import { ScrappedData } from "./models/ScrappedData";
 
@@ -177,8 +177,8 @@ app.get("/records", async (req, res) => {
     } else {
       limit = Math.max(1, parseInt(req.query.limit as string) || 10);
     }
-    const listIdParam = req.query.listId as string | undefined;
-    const listId = listIdParam ? parseInt(listIdParam) : undefined;
+    const listIdParam = req.query.listName as string | undefined;
+    const listName = listIdParam || undefined;
     const startedByBotParam = req.query.startedByBot;
 
     const dataType = (req.query.dataType as string as "all" | "clean" | "incomplete") || "all";
@@ -192,7 +192,7 @@ app.get("/records", async (req, res) => {
 
     const filterObject = Object.fromEntries(
       Object.entries({
-        listId,
+        listName,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
       }).filter(([_, v]) => v !== undefined)
     );
@@ -429,21 +429,22 @@ app.get("/record-detail/:id", async (req, res) => {
   const contactId = req.params.id;
 
   try {
-    const contact = await prisma.contacts.findUnique({
-      where: { id: contactId },
-      include: {
-        contact_phones: true,
-        property_details: {
-          include: {
-            lists: {
-              include: {
-                list: true,
-              },
-            },
-          },
-        },
-      },
-    });
+    const contact = await getCompletedDataForContactId(contactId);
+    // const contact = await prisma.contacts.findUnique({
+    //   where: { id: contactId },
+    //   include: {
+    //     contact_phones: true,
+    //     property_details: {
+    //       include: {
+    //         lists: {
+    //           include: {
+    //             list: true,
+    //           },
+    //         },
+    //       },
+    //     },
+    //   },
+    // });
 
     if (!contact) {
       return res.status(404).json({ error: "Contact not found" });
@@ -456,7 +457,7 @@ app.get("/record-detail/:id", async (req, res) => {
   }
 });
 
-app.post("/mongodbsave", async (req, res) => {
+app.get("/mongodbsave", async (req, res) => {
   try {
     console.log("📋 Manual MongoDB sync triggered...");
     await syncScrappedData();

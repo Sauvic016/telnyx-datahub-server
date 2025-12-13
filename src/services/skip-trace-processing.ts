@@ -5,6 +5,7 @@ import { validateAndStorePhone } from "./phone-validation";
 import crypto from "crypto";
 import { ScrappedData } from "../models/ScrappedData";
 import { makeIdentityKey } from "../utils/helper";
+import { toE164 } from "../utils/phone";
 
 interface IWebhookResult {
   identityKey: string;
@@ -125,21 +126,6 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
 
           console.log(`[SkipTraceProcessing] Validating ${phonesToValidate.length} selected phones...`);
 
-          // Validate and store each selected phone
-          // for (const phone of phonesToValidate) {
-          //   const result = await validateAndStorePhone({
-          //     contactId: phone.contactId,
-          //     phoneNumber: phone.phoneNumber,
-          //     phoneType: phone.phoneType,
-          //     isMainContact: phone.isMainContact,
-          //   });
-
-          //   if (result.success) {
-          //     console.log(`[SkipTraceProcessing] ✓ Validated and stored phone ${phone.phoneNumber}`);
-          //   } else {
-          //     console.log(`[SkipTraceProcessing] ✗ Skipped phone ${phone.phoneNumber}: ${result.reason}`);
-          //   }
-          // }
           await Promise.all(
             phonesToValidate.map(async (phone, index) => {
               const result = await validateAndStorePhone({
@@ -346,7 +332,8 @@ const saveDirectSkipContacts = async (response: DirectSkipSearchResponse): Promi
               });
               await prisma.$transaction(async (tx) => {
                 for (const phone of relPhoneNumbers) {
-                  const formattedNumber = `+1${phone.phonenumber}`;
+                  if (!phone.phonenumber) continue;
+                  const formattedNumber = toE164(phone.phonenumber);
 
                   const existing = await tx.contact_phones.findFirst({
                     where: {
@@ -458,127 +445,152 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
       console.warn(`[SavePropertyDetails] No MongoDB record found for ${identityKey}`);
       return;
     }
-    const propertyAddr = pickField(mongoRecord, ["property_address", "Property Address"]);
-    const propertyCity = pickField(mongoRecord, ["property_city", "Property City", "City"]);
-    const propertyState = pickField(mongoRecord, ["property_state", "Property State", "State"]);
-    const propertyZip = pickField(mongoRecord, ["property_zip_code", "Property Zip Code", "Zip"]);
 
-    const bedrooms = pickField(mongoRecord, ["bedrooms", "Bedrooms", "Beds"]);
-    const bathrooms = pickField(mongoRecord, ["bathrooms", "Bathrooms", "Baths"]);
-    const sqft = pickField(mongoRecord, ["sqft", "Square Feet", "Sqft"]);
-    const year = pickField(mongoRecord, ["year", "Year Built"]);
-    const heatingType = pickField(mongoRecord, ["Heat"]);
-    const airConditioner = pickField(mongoRecord, ["air_conditioner", "Air Conditioner"]);
-    const buildingUseCode = pickField(mongoRecord, ["building_use_code", "Land Use Code"]);
-    const parcelId = pickField(mongoRecord, ["parcel_id", "Parcel", "APN"]);
-    const lastSalePrice = pickField(mongoRecord, ["last_sale_price", "Last Sale Price"]);
-    const lastSold = pickField(mongoRecord, ["last_sold", "Last Sale Date"]);
-    const taxDelinquentValue = pickField(mongoRecord, ["tax_delinquent_value", "Tax Delinquent Amount"]);
-    const yearBehindOnTaxes = pickField(mongoRecord, ["year_behind_on_taxes", "Years Delinquent"]);
-    const foreclosureDate = pickField(mongoRecord, ["foreclosure_date", "Foreclosure"]);
-    const bankruptcyDate = pickField(mongoRecord, ["bankruptcy_recording_date", "Bankruptcy"]);
-    const lienType = pickField(mongoRecord, ["lien_type", "Tax Lien"]);
-
-    let finalAirConditioner = airConditioner;
-    if (!finalAirConditioner && heatingType?.toUpperCase().includes("AIR CONDITION")) {
-      finalAirConditioner = "Yes";
+    // Get property_datas array, default to empty array if not present
+    const propertyDatas: Record<string, any>[] = mongoRecord.property_datas || [];
+    
+    if (propertyDatas.length === 0) {
+      console.warn(`[SavePropertyDetails] No property_datas found for ${identityKey}`);
+      return;
     }
 
-    // Check if property already exists
-    let propertyDetails = await prisma.property_details.findFirst({
-      where: {
-        contact_id: contactId,
-        property_address: { equals: propertyAddr, mode: "insensitive" },
-      },
-    });
+    // Get currList from mongoRecord for list associations
+    const listStrArray: string[] = mongoRecord.currList || [];
 
-    // Create or update property
-    if (!propertyDetails) {
-      propertyDetails = await prisma.property_details.create({
-        data: {
-          id: crypto.randomUUID(),
+    // Process each property in property_datas
+    for (const propData of propertyDatas) {
+      const propertyAddr = propData.property_address || "";
+      const propertyCity = propData.property_city || "";
+      const propertyState = propData.property_state || "";
+      const propertyZip = propData.property_zip_code || "";
+
+      const bedrooms = propData.bedrooms ? String(propData.bedrooms) : "";
+      const bathrooms = propData.bathrooms ? String(propData.bathrooms) : "";
+      const sqft = propData.square_feet ? String(propData.square_feet) : "";
+      const year = propData.year_built ? String(propData.year_built) : "";
+      const heatingType = propData.heat || "";
+      const airConditioner = propData.air_conditioner || "";
+      const buildingUseCode = propData.land_use_code || "";
+      const parcelId = propData.parcel || propData.apn || "";
+      const lastSalePrice = propData.last_sale_price ? String(propData.last_sale_price) : "";
+      const lastSold = propData.last_sale_date || "";
+      const taxDelinquentValue = propData.tax_delinquent_amount ? String(propData.tax_delinquent_amount) : "";
+      const yearBehindOnTaxes = propData.years_delinquent ? String(propData.years_delinquent) : "";
+      const foreclosureDate = propData.foreclosure || propData.foreclosure_date || "";
+      const bankruptcyDate = propData.bankruptcy || propData.bankruptcy_recording_date || "";
+      const lienType = propData.tax_lien || "";
+      const cdu = propData.cdu || "";
+
+      let finalAirConditioner = airConditioner;
+      if (!finalAirConditioner && heatingType?.toUpperCase().includes("AIR CONDITION")) {
+        finalAirConditioner = "Yes";
+      }
+
+      // Skip if no property address
+      if (!propertyAddr) {
+        console.warn(`[SavePropertyDetails] Skipping property with no address for ${identityKey}`);
+        continue;
+      }
+
+      // Check if property already exists
+      let propertyDetails = await prisma.property_details.findFirst({
+        where: {
           contact_id: contactId,
-          property_address: propertyAddr,
-          property_city: propertyCity,
-          property_state: propertyState,
-          property_zip: propertyZip,
-          bedrooms,
-          bathrooms,
-          sqft,
-          year,
-          heating_type: heatingType,
-          air_conditioner: finalAirConditioner,
-          building_use_code: buildingUseCode,
-          parcel_id: parcelId,
-          apn: parcelId,
-          last_sale_price: lastSalePrice,
-          last_sold: lastSold,
-          tax_delinquent_value: taxDelinquentValue,
-          year_behind_on_taxes: yearBehindOnTaxes,
-          foreclosure_date: foreclosureDate,
-          bankruptcy_recording_date: bankruptcyDate,
-          lien_type: lienType,
+          property_address: { equals: propertyAddr, mode: "insensitive" },
         },
       });
-      console.log(`[SavePropertyDetails] Created property details ${propertyDetails.id}`);
-    } else {
-      const updateData: any = {};
 
-      if (propertyCity) updateData.property_city = propertyCity;
-      if (propertyState) updateData.property_state = propertyState;
-      if (propertyZip) updateData.property_zip = propertyZip;
-      if (bedrooms) updateData.bedrooms = bedrooms;
-      if (bathrooms) updateData.bathrooms = bathrooms;
-      if (sqft) updateData.sqft = sqft;
-      if (year) updateData.year = year;
-      if (heatingType) updateData.heating_type = heatingType;
-      if (finalAirConditioner) updateData.air_conditioner = finalAirConditioner;
-      if (buildingUseCode) updateData.building_use_code = buildingUseCode;
-      if (parcelId) updateData.parcel_id = parcelId;
-      if (parcelId) updateData.apn = parcelId;
-      if (lastSalePrice) updateData.last_sale_price = lastSalePrice;
-      if (lastSold) updateData.last_sold = lastSold;
-      if (taxDelinquentValue) updateData.tax_delinquent_value = taxDelinquentValue;
-      if (yearBehindOnTaxes) updateData.year_behind_on_taxes = yearBehindOnTaxes;
-      if (foreclosureDate) updateData.foreclosure_date = foreclosureDate;
-      if (bankruptcyDate) updateData.bankruptcy_recording_date = bankruptcyDate;
-      if (lienType) updateData.lien_type = lienType;
-
-      if (Object.keys(updateData).length > 0) {
-        await prisma.property_details.update({
-          where: { id: propertyDetails.id },
-          data: updateData,
+      // Create or update property
+      if (!propertyDetails) {
+        propertyDetails = await prisma.property_details.create({
+          data: {
+            id: crypto.randomUUID(),
+            contact_id: contactId,
+            property_address: propertyAddr,
+            property_city: propertyCity,
+            property_state: propertyState,
+            property_zip: propertyZip,
+            bedrooms,
+            bathrooms,
+            sqft,
+            year,
+            heating_type: heatingType,
+            air_conditioner: finalAirConditioner,
+            building_use_code: buildingUseCode,
+            parcel_id: parcelId,
+            apn: parcelId,
+            last_sale_price: lastSalePrice,
+            last_sold: lastSold,
+            tax_delinquent_value: taxDelinquentValue,
+            year_behind_on_taxes: yearBehindOnTaxes,
+            foreclosure_date: foreclosureDate,
+            bankruptcy_recording_date: bankruptcyDate,
+            lien_type: lienType,
+            cdu,
+          },
         });
-        console.log(`[SavePropertyDetails] Updated property details ${propertyDetails.id}`);
+        console.log(`[SavePropertyDetails] Created property details ${propertyDetails.id}`);
+      } else {
+        const updateData: any = {};
+
+        if (propertyCity) updateData.property_city = propertyCity;
+        if (propertyState) updateData.property_state = propertyState;
+        if (propertyZip) updateData.property_zip = propertyZip;
+        if (bedrooms) updateData.bedrooms = bedrooms;
+        if (bathrooms) updateData.bathrooms = bathrooms;
+        if (sqft) updateData.sqft = sqft;
+        if (year) updateData.year = year;
+        if (heatingType) updateData.heating_type = heatingType;
+        if (finalAirConditioner) updateData.air_conditioner = finalAirConditioner;
+        if (buildingUseCode) updateData.building_use_code = buildingUseCode;
+        if (parcelId) updateData.parcel_id = parcelId;
+        if (parcelId) updateData.apn = parcelId;
+        if (lastSalePrice) updateData.last_sale_price = lastSalePrice;
+        if (lastSold) updateData.last_sold = lastSold;
+        if (taxDelinquentValue) updateData.tax_delinquent_value = taxDelinquentValue;
+        if (yearBehindOnTaxes) updateData.year_behind_on_taxes = yearBehindOnTaxes;
+        if (foreclosureDate) updateData.foreclosure_date = foreclosureDate;
+        if (bankruptcyDate) updateData.bankruptcy_recording_date = bankruptcyDate;
+        if (lienType) updateData.lien_type = lienType;
+        if (cdu) updateData.cdu = cdu;
+
+        if (Object.keys(updateData).length > 0) {
+          await prisma.property_details.update({
+            where: { id: propertyDetails.id },
+            data: updateData,
+          });
+          console.log(`[SavePropertyDetails] Updated property details ${propertyDetails.id}`);
+        }
       }
-    }
 
-    const listStrArray = mongoRecord.currList;
-    for (const listName of listStrArray) {
-      // Upsert List
-      const list = await prisma.list.upsert({
-        where: { name: listName },
-        update: {},
-        create: { name: listName },
-      });
+      // Link property to lists
+      for (const listName of listStrArray) {
+        // Upsert List
+        const list = await prisma.list.upsert({
+          where: { name: listName },
+          update: {},
+          create: { name: listName },
+        });
 
-      // Upsert PropertyList association
-      await prisma.propertyList.upsert({
-        where: {
-          propertyId_listId: {
+        // Upsert PropertyList association
+        await prisma.propertyList.upsert({
+          where: {
+            propertyId_listId: {
+              propertyId: propertyDetails.id,
+              listId: list.id,
+            },
+          },
+          update: {},
+          create: {
             propertyId: propertyDetails.id,
             listId: list.id,
           },
-        },
-        update: {},
-        create: {
-          propertyId: propertyDetails.id,
-          listId: list.id,
-        },
-      });
-      console.log(`[SavePropertyDetails] Linked property ${propertyDetails.id} to list ${listName}`);
+        });
+        console.log(`[SavePropertyDetails] Linked property ${propertyDetails.id} to list ${listName}`);
+      }
     }
   } catch (err) {
     console.error(`[SavePropertyDetails] Error processing ${identityKey}:`, err);
   }
 };
+

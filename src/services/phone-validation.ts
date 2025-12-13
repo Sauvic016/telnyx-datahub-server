@@ -86,13 +86,21 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
       },
     });
 
-    if (existingForContact) {
-      console.log(`[PhoneValidation] Contact ${contactId} already has phone ${e164} (or legacy ${normalized})`);
-      return {
-        success: false,
-        reason: "duplicate",
-      };
-    }
+    // if (existingForContact) {
+    //   console.log(`[PhoneValidation] Contact ${contactId} already has phone ${e164} (or legacy ${normalized})`);
+    //   return {
+    //     success: false,
+    //     reason: "duplicate",
+    //   };
+    // }
+
+     if (existingForContact && existingForContact.telynxLookupId) {
+    console.log(`[PhoneValidation] Contact ${contactId} already has phone ${e164} (or legacy ${normalized})`);
+    return {
+      success: false,
+      reason: "duplicate",
+    };
+  }
 
     // Check if TelynxLookup already exists for this phone number
     // Check BOTH formats
@@ -212,18 +220,32 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
 
       console.log(`[PhoneValidation] Upserted TelynxLookup record ${lookupRecord.id}`);
 
-      // 2. Create contact_phones record (links via phone_number AND foreign key)
-      await tx.contact_phones.create({
-        data: {
-          id: phoneId,
-          contact_id: contactId,
-          phone_number: e164, // Always store as E.164
-          phone_type: phoneType,
-          phone_status: "active",
-          phone_tags: isMainContact ? `DS${count}` : "",
-          telynxLookupId: lookupRecord.id, // Link to lookup record
-        },
-      });
+      // 2. Create or Update contact_phones record
+      if (existingForContact) {
+        await tx.contact_phones.update({
+          where: { id: existingForContact.id },
+          data: {
+            telynxLookupId: lookupRecord.id,
+            phone_number: e164, // Ensure E.164
+            phone_status: "active",
+            phone_tags: isMainContact ? `DS${count}` : "",
+          },
+        });
+        console.log(`[PhoneValidation] Updated contact_phones for ${e164} (linked lookup)`);
+      } else {
+        await tx.contact_phones.create({
+          data: {
+            id: phoneId,
+            contact_id: contactId,
+            phone_number: e164, // Always store as E.164
+            phone_type: phoneType,
+            phone_status: "active",
+            phone_tags: isMainContact ? `DS${count}` : "",
+            telynxLookupId: lookupRecord.id, // Link to lookup record
+          },
+        });
+        console.log(`[PhoneValidation] Created contact_phones for ${e164} (linked lookup)`);
+      }
     });
 
     console.log(`[PhoneValidation] Successfully validated and stored ${normalized} for contact ${contactId}`);

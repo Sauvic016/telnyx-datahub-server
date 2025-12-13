@@ -1,32 +1,26 @@
-import pl from "nodejs-polars";
-import path from "path";
+import pd from "nodejs-polars";
+import path, { dirname } from "path";
 import prisma from "../db";
-
-// export const sendJobResult = async () => {
-//   const [jobs, count] = await prisma.$transaction([
-//     prisma.botOutputFile.findMany({
-//       orderBy: { receivedAt: "desc" },
-//     }),
-//     prisma.botOutputFile.count(),
-//   ]);
-
-//   return { count, jobs };
-// };
+import { fileExists } from "../utils/helper";
 
 export const sendRecordForJob = async (jobId: number): Promise<Record<string, unknown>[]> => {
   const job = await prisma.botJobs.findFirst({
     where: { jobId },
   });
 
-  if (!job?.resultFilePath) {
-    console.warn(`No botOutputFile found for jobId=${jobId}`);
+  if (!job) {
+    console.warn(`No job for jobId=${jobId}`);
     return [];
   }
 
-  const filePath = path.resolve(job.resultFilePath);
+  const filePath = path.join(process.cwd(), "job_result", `final_output_${jobId}.csv`);
+
+  if (!(await fileExists(filePath))) {
+    return [];
+  }
 
   try {
-    const df = pl.readCSV(filePath);
+    const df = pd.readCSV(filePath);
 
     const columns = df.columns;
     const rowsArray = df.rows(); // array of arrays

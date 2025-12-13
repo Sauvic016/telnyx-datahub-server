@@ -1,6 +1,7 @@
 import prisma from "../db";
 import { BotJobs } from "../generated/prisma/client";
 import { BOTMAP } from "./constants";
+import fs from "fs/promises";
 
 export function getFlowNames(botId: number) {
   return BOTMAP[botId].flow?.map((flowId) => BOTMAP[flowId].name ?? "");
@@ -38,3 +39,12 @@ export const getAllJobs = async (): Promise<BotJobs[]> => {
     orderBy: { updatedAt: "desc" },
   });
 };
+
+export async function fileExists(filePath: string) {
+  try {
+    await fs.access(filePath);
+    return true; // file exists
+  } catch {
+    return false; // file does NOT exist
+  }
+}

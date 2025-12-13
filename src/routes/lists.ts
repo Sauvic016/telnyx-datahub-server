@@ -3,7 +3,7 @@ import prisma from "../db";
 
 import { ScrappedData } from "../models/ScrappedData";
 import { makeIdentityKey, getFlowNames } from "../utils/helper";
-import { pickField, } from "../services/contacts-check";
+import { pickField } from "../services/contacts-check";
 import { JobCheckResult } from "../types/records";
 import { BOTMAP } from "../utils/constants";
 import { DirectSkipStatus, RowDecisionStatus } from "../generated/prisma/enums";
@@ -17,31 +17,27 @@ router.get("/", async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 10));
     const skip = (page - 1) * limit;
 
-    const [lists, totalItems] = await Promise.all([
-      prisma.list.findMany({
-        include: {
-          _count: {
-            select: { properties: true },
-          },
-        },
-        skip,
-        take: limit,
-      }),
-      prisma.list.count(),
-    ]);
+    const lists = await prisma.list.findMany({
+      skip,
+      take: limit,
+    });
 
-    const formattedLists = lists.map((list) => ({
-      id: list.id,
-      name: list.name,
-      count: list._count.properties,
-    }));
+    const formattedLists = await Promise.all(
+      lists.map(async ({ id, name }) => {
+        const count = await ScrappedData.countDocuments({
+          currList: { $regex: name, $options: "i" },
+        });
+
+        return { id, name, countofRecords: count };
+      })
+    );
 
     res.json({
       data: formattedLists,
       page,
       limit,
-      totalItems,
-      totalPages: Math.ceil(totalItems / limit),
+      totalItems: lists.length,
+      totalPages: Math.ceil(lists.length / limit),
     });
   } catch (error) {
     console.error("Error fetching lists:", error);
