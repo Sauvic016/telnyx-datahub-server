@@ -283,9 +283,12 @@ app.post("/decisions", async (req, res) => {
 
       const dataType = (filter?.dataType as string as "all" | "clean" | "incomplete") || "all";
       const listId = filter?.listId;
+      const listName = filter?.listName;
+      
       const startedByBot = filter?.startedByBot;
       const filterObject = Object.fromEntries(
         Object.entries({
+          listName,
           listId,
           botId: startedByBot ? Number(startedByBot) : undefined,
         }).filter(([_, v]) => v !== undefined)
