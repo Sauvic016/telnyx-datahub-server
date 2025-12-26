@@ -229,6 +229,8 @@ app.get("/new-data-records", async (req, res) => {
     }
     const listIdParam = req.query.listId as string | undefined;
     const listId = listIdParam ? parseInt(listIdParam) : undefined;
+    const listNameParam = req.query.listName as string | undefined;
+    const listName = listNameParam || undefined;
     const startedByBotParam = req.query.startedByBot;
 
     const dataType = (req.query.dataType as string as "all" | "clean" | "incomplete") || "all";
@@ -243,6 +245,7 @@ app.get("/new-data-records", async (req, res) => {
     const filterObject = Object.fromEntries(
       Object.entries({
         isListChanged: true,
+        listName,
         listId,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
       }).filter(([_, v]) => v !== undefined)

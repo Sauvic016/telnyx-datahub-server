@@ -1,7 +1,7 @@
 import { DirectSkipSearchResponse } from "../types/directskip";
 import prisma from "../db";
 import { ProcessingStage, DirectSkipStatus } from "../generated/prisma/enums";
-import { validateAndStorePhone } from "./phone-validation";
+import { validateAndStorePhone } from "./phone-validation-test";
 import crypto from "crypto";
 import { ScrappedData } from "../models/ScrappedData";
 import { makeIdentityKey } from "../utils/helper";
@@ -448,7 +448,7 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
 
     // Get property_datas array, default to empty array if not present
     const propertyDatas: Record<string, any>[] = mongoRecord.property_datas || [];
-    
+
     if (propertyDatas.length === 0) {
       console.warn(`[SavePropertyDetails] No property_datas found for ${identityKey}`);
       return;
@@ -509,7 +509,7 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
             property_address: propertyAddr,
             property_city: propertyCity,
             property_state: propertyState,
-            property_zip: propertyZip,
+            property_zip: String(propertyZip),
             bedrooms,
             bathrooms,
             sqft,
@@ -517,8 +517,8 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
             heating_type: heatingType,
             air_conditioner: finalAirConditioner,
             building_use_code: buildingUseCode,
-            parcel_id: parcelId,
-            apn: parcelId,
+            parcel_id: String(parcelId),
+            apn: String(parcelId),
             last_sale_price: lastSalePrice,
             last_sold: lastSold,
             tax_delinquent_value: taxDelinquentValue,
@@ -535,7 +535,7 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
 
         if (propertyCity) updateData.property_city = propertyCity;
         if (propertyState) updateData.property_state = propertyState;
-        if (propertyZip) updateData.property_zip = propertyZip;
+        if (propertyZip) updateData.property_zip = String(propertyZip);
         if (bedrooms) updateData.bedrooms = bedrooms;
         if (bathrooms) updateData.bathrooms = bathrooms;
         if (sqft) updateData.sqft = sqft;
@@ -543,8 +543,8 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
         if (heatingType) updateData.heating_type = heatingType;
         if (finalAirConditioner) updateData.air_conditioner = finalAirConditioner;
         if (buildingUseCode) updateData.building_use_code = buildingUseCode;
-        if (parcelId) updateData.parcel_id = parcelId;
-        if (parcelId) updateData.apn = parcelId;
+        if (parcelId) updateData.parcel_id = String(parcelId);
+        if (parcelId) updateData.apn = String(parcelId);
         if (lastSalePrice) updateData.last_sale_price = lastSalePrice;
         if (lastSold) updateData.last_sold = lastSold;
         if (taxDelinquentValue) updateData.tax_delinquent_value = taxDelinquentValue;
@@ -593,4 +593,3 @@ const savePropertyDetails = async (contactId: string, identityKey: string) => {
     console.error(`[SavePropertyDetails] Error processing ${identityKey}:`, err);
   }
 };
-

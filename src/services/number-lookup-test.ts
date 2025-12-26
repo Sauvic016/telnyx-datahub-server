@@ -1,8 +1,7 @@
-import { Telnyx } from "telnyx";
+import axios from "axios";
 import { toE164 } from "../utils/phone";
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || "";
-const telnyx = new Telnyx({ apiKey: TELNYX_API_KEY });
 
 interface ILookupNumbers {
   phone_number: string;
@@ -51,28 +50,42 @@ export interface TelnyxLookupResult {
  * @param normalizedPhone - Phone number in normalized format (e.g., "13307605034")
  * @returns TelnyxLookupResult with success status and data
  */
-export async function lookupSingleNumber(normalizedPhone: string): Promise<TelnyxLookupResult> {
+export async function lookupSingleNumber(
+  normalizedPhone: string
+): Promise<TelnyxLookupResult> {
   try {
     const e164Phone = toE164(normalizedPhone);
-    console.log(`[TelnyxLookup] Looking up ${e164Phone}...`);
 
-    const { data: numberInfo } = await telnyx.numberLookup.retrieve(e164Phone,
- {
-    type: "caller-name,carrier" as any
-  } );
+    console.log(`[TelnyxLookup] Looking up ${e164Phone} via Telnyx REST API using axios...`);
 
+    const url = `https://api.telnyx.com/v2/number_lookup/${encodeURIComponent(
+      e164Phone
+    )}?type=carrier&type=caller-name`;
+
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${TELNYX_API_KEY}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+    });
 
     console.log(`[TelnyxLookup] Success for ${e164Phone}`);
-    console.log(numberInfo);
+    console.log(response.data);
+
     return {
       success: true,
-      data: numberInfo,
+      data: response.data?.data,
     };
   } catch (error: any) {
-    console.error(`[TelnyxLookup] Failed for ${normalizedPhone}:`, error.message);
+    console.error(
+      `[TelnyxLookup] Failed for ${normalizedPhone}:`,
+      error.response?.data || error.message
+    );
+
     return {
       success: false,
-      error: error.message || "Unknown error",
+      error: error.response?.data?.errors?.[0]?.detail || error.message,
     };
   }
 }
@@ -86,7 +99,9 @@ const numberLookup = async (phones: ILookupNumbers[]) => {
     phones.map((phone) => phone.phone_number)
   );
 
-  const results = await Promise.all(phones.map((phone) => lookupSingleNumber(phone.phone_number)));
+  const results = await Promise.all(
+    phones.map((phone) => lookupSingleNumber(phone.phone_number))
+  );
 
   return results;
 };
