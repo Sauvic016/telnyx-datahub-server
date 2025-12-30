@@ -3,6 +3,7 @@ import fs from "fs";
 import pl from "nodejs-polars";
 import { getLatestJobsPerBot, getAllJobs } from "../utils/helper";
 import { ScrappedData } from "../models/ScrappedData";
+import prisma from "../db";
 
 const mongoToPropertyDetailsMap: Record<string, string> = {
   // ─── PROPERTY ADDRESS ───────────────────────────
@@ -73,6 +74,7 @@ const mongoToPropertyDetailsMap: Record<string, string> = {
   probate_open_date: "probate_open_date",
   attorney_on_file: "attorney_on_file",
 
+  // ─── FORECLOSURE / BANKRUPTCY ───────────────────
   foreclosure_date: "foreclosure_date",
   foreclosure: "foreclosure", // CSV variation
   bankruptcy_recording_date: "bankruptcy_recording_date",
@@ -105,13 +107,9 @@ function makeIdentityKey(first: string, last: string, addr: string): string {
   return `${first.trim().toLowerCase()}|${last.trim().toLowerCase()}|${addr.trim().toLowerCase()}`;
 }
 
-import prisma from "../db";
-
-// ... (existing imports)
-
-export const syncScrappedData = async () => {
+export const syncScrappedDataOptimized = async () => {
   try {
-    console.log("Starting MongoDB sync...");
+    console.log("Starting MongoDB sync (Optimized)...");
     // const latestJobs = await getLatestJobsPerBot();
     const latestJobs = await getAllJobs();
     console.log(`Found ${latestJobs.length} jobs to process.`);
@@ -159,7 +157,7 @@ export const syncScrappedData = async () => {
         const propertyCityIdx = propertyCityCol ? cols.indexOf(propertyCityCol) : -1;
         const propertyStateIdx = propertyStateCol ? cols.indexOf(propertyStateCol) : -1;
 
-        // 1. Collect all valid identities from CSV to batch query Postgres
+        // 1. Collect all valid identities from CSV to batch query Postgres & Mongo
         const identityKeysInCsv = new Set<string>();
         for (const row of rows) {
           const first = String(row[fnIdx] ?? "").trim();
@@ -170,17 +168,13 @@ export const syncScrappedData = async () => {
           }
         }
 
-        // 2. Batch query Postgres for existing contacts
-        // We can't easily query by computed identityKey in Prisma without a raw query or many ORs.
-        // Given the potential size, let's use a raw query or fetch in chunks if needed.
-        // For simplicity and safety with Prisma, we'll fetch matches using OR conditions in chunks.
+        // 2. Batch query Postgres for existing contacts (for 'inPostgres' flag)
         const existingIdentityKeys = new Set<string>();
         const csvIdentities = Array.from(identityKeysInCsv);
         const BATCH_SIZE = 500;
 
         for (let i = 0; i < csvIdentities.length; i += BATCH_SIZE) {
           const batch = csvIdentities.slice(i, i + BATCH_SIZE);
-          // We need to split the key back to query components
           const orConditions = batch.map((key) => {
             const [f, l, a] = key.split("|");
             return {
@@ -202,7 +196,17 @@ export const syncScrappedData = async () => {
           });
         }
 
-        let upsertCount = 0;
+        // 3. Batch query MongoDB for existing records (to get prevList)
+        // We fetch only the fields we need to determine transition state
+        const mongoExisting = await ScrappedData.find(
+          { identityKey: { $in: Array.from(identityKeysInCsv) } },
+          { identityKey: 1, currList: 1 }
+        ).lean();
+
+        // Create a lookup map for O(1) access
+        const listMap = new Map(mongoExisting.map((d: any) => [d.identityKey, d.currList || []]));
+
+        const bulkOps: any[] = [];
 
         for (const row of rows) {
           const first = String(row[fnIdx] ?? "").trim();
@@ -222,8 +226,6 @@ export const syncScrappedData = async () => {
           const identityKey = makeIdentityKey(first, last, addr);
 
           // --- Calculate 'clean' ---
-          // Condition: false if required fields are empty (only checks columns that exist in CSV)
-          // Condition: false if first+last contains "LLC"
           let isClean = true;
           if (
             !first ||
@@ -249,7 +251,11 @@ export const syncScrappedData = async () => {
           // --- Calculate 'inPostgres' ---
           const inPostgres = existingIdentityKeys.has(identityKey);
 
-          // Create a flexible object with all columns
+          // --- Calculate Lists (Transition Logic) ---
+          const prevList = listMap.get(identityKey) || [];
+          let currList: string[] = [];
+          let isListChanged = false;
+
           const docData: Record<string, any> = {
             identityKey,
             jobId: job.jobId,
@@ -257,18 +263,15 @@ export const syncScrappedData = async () => {
             syncedAt: new Date(),
             clean: isClean,
             inPostgres: inPostgres,
-            prevList: [],
-            currList: [],
-            property_datas: [],
-            isListChanged: false,
+            prevList: prevList,
+            // currList will be set below
           };
 
           let property_data: Record<string, any> = {};
-          // Add all CSV columns to the document
+          
           cols.forEach((col, idx) => {
             const value = row[idx];
 
-            // Normalize column name to check if it's a list field or property field
             const normalizedCol = col
               .trim()
               .replace(/^"|"$/g, "")
@@ -278,25 +281,13 @@ export const syncScrappedData = async () => {
               .replace(/_+/g, "_")
               .replace(/^_|_$/g, "");
 
-            // Convert null/empty values to empty string for list fields
             if (normalizedCol === "list" || normalizedCol === "lists") {
-              docData["prevList"] = docData["currList"];
-              docData["currList"] =
+              currList =
                 value === null || value === undefined || String(value).trim() === ""
                   ? []
                   : String(value)
                       .split(",")
                       .map((item: string) => item.trim());
-              if (docData["prevList"].length !== docData["currList"].length) {
-                docData["isListChanged"] = true;
-              } else {
-                const prevSet = new Set(docData["prevList"]);
-                const currSet = new Set(docData["currList"]);
-                const areSame =
-                  docData["prevList"].every((item: string) => currSet.has(item)) &&
-                  docData["currList"].every((item: string) => prevSet.has(item));
-                docData["isListChanged"] = !areSame;
-              }
             }
 
             if (normalizedCol in mongoToPropertyDetailsMap) {
@@ -304,32 +295,70 @@ export const syncScrappedData = async () => {
             } else {
               let colKey = col
                 .trim()
-                .replace(/^"|"$/g, "") // Remove leading/trailing quotes
+                .replace(/^"|"$/g, "")
                 .toLowerCase()
-                .replace(/[\s\/\-\.]+/g, "_") // Replace spaces, slashes, dashes, dots with underscore (ALL occurrences)
-                .replace(/[^a-z0-9_]/g, "") // Remove any other special characters
-                .replace(/_+/g, "_") // Collapse multiple consecutive underscores into one
-                .replace(/^_|_$/g, ""); // Remove leading/trailing underscores
+                .replace(/[\s\/\-\.]+/g, "_")
+                .replace(/[^a-z0-9_]/g, "")
+                .replace(/_+/g, "_")
+                .replace(/^_|_$/g, "");
               docData[colKey] = value;
             }
           });
 
-          docData.property_datas.push(property_data);
+          docData["currList"] = currList;
 
-          await ScrappedData.findOneAndUpdate(
-            { identityKey }, // Filter by unique key
-            { $set: docData }, // Update fields
-            { upsert: true, new: true } // Create if not exists
-          );
-          upsertCount++;
+          // Calculate isListChanged based on prevList (from DB) and currList (from CSV)
+          if (prevList.length !== currList.length) {
+            isListChanged = true;
+          } else {
+            const prevSet = new Set(prevList);
+            const currSet = new Set(currList);
+            const areSame =
+              prevList.every((item: string) => currSet.has(item)) &&
+              currList.every((item: string) => prevSet.has(item));
+            isListChanged = !areSame;
+          }
+          docData["isListChanged"] = isListChanged;
+
+          // CRITICAL FIX: Update the in-memory map so that if this same identityKey
+          // appears in a subsequent job in this same loop, it sees the NEW list as "prevList".
+          listMap.set(identityKey, currList);
+
+          // Construct the update operation
+          // We want to $set the main fields and $push the new property_data
+          // However, if we use $set for everything, we overwrite property_datas.
+          // To append property_datas, we use $push.
+          
+          // We remove property_datas from docData because we will $push it separately
+          // But wait, if the document is new (upsert), we need to create the array.
+          // $push works on upsert too (it creates the array).
+          
+          bulkOps.push({
+            updateOne: {
+              filter: { identityKey },
+              update: {
+                $set: docData,
+                $addToSet: { property_datas: property_data }
+              },
+              upsert: true,
+            },
+          });
         }
-        console.log(`Synced ${upsertCount} records for job ${job.jobId}`);
+
+        if (bulkOps.length > 0) {
+          console.log(`Bulk writing ${bulkOps.length} records for job ${job.jobId}...`);
+          await ScrappedData.bulkWrite(bulkOps);
+          console.log(`Synced ${bulkOps.length} records for job ${job.jobId}`);
+        } else {
+            console.log(`No records to sync for job ${job.jobId}`);
+        }
+
       } catch (err) {
         console.error(`Error processing file ${fileName}:`, err);
       }
     }
-    console.log("MongoDB sync completed.");
+    console.log("MongoDB sync (Optimized) completed.");
   } catch (error) {
-    console.error("Error in syncScrappedData:", error);
+    console.error("Error in syncScrappedDataOptimized:", error);
   }
 };

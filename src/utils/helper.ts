@@ -26,8 +26,10 @@ export const getLatestJobsPerBot = async (): Promise<BotJobs[]> => {
   );
 
   const notNull = (item: BotJobs | null): item is BotJobs => item !== null;
-
-  return latest.filter(notNull);
+  const jobs = latest.filter(notNull);
+  // Sort by updatedAt ASC so that we process older jobs first, then newer jobs.
+  // This ensures the final state in MongoDB reflects the latest job.
+  return jobs.sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime());
 };
 
 export function makeIdentityKey(first: string, last: string, addr: string): string {
@@ -36,7 +38,7 @@ export function makeIdentityKey(first: string, last: string, addr: string): stri
 
 export const getAllJobs = async (): Promise<BotJobs[]> => {
   return prisma.botJobs.findMany({
-    orderBy: { updatedAt: "desc" },
+    orderBy: { updatedAt: "asc" },
   });
 };
 

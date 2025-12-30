@@ -20,6 +20,7 @@ import listsRouter from "./routes/lists";
 import { getCompletedData, getCompletedDataForContactId } from "./services/completed-data";
 import { BOTMAP } from "./utils/constants";
 import { ScrappedData } from "./models/ScrappedData";
+import { syncScrappedDataOptimized } from "./services/mongo-sync-optimized";
 
 const app = express();
 
@@ -143,7 +144,7 @@ app.post("/receive", upload.array("files"), async (req, res) => {
 
     // Automatically sync to MongoDB after successful file upload
     // Run in background without blocking the response
-    syncScrappedData()
+    syncScrappedDataOptimized()
       .then(() => {
         console.log("✅ MongoDB sync completed successfully after file upload");
       })
@@ -466,7 +467,7 @@ app.get("/record-detail/:id", async (req, res) => {
 app.get("/mongodbsave", async (req, res) => {
   try {
     console.log("📋 Manual MongoDB sync triggered...");
-    await syncScrappedData();
+    await syncScrappedDataOptimized();
     res.json({
       status: "ok",
       message: "MongoDB sync completed successfully",
