@@ -73,17 +73,17 @@ app.post("/receive", upload.array("files"), async (req, res) => {
     }
 
     // Build a lookup by jobId so we can match by file name
-    const jobsById = new Map<number, any>();
+    const jobsById = new Map<string, any>();
     for (const job of jobs) {
-      jobsById.set(Number(job.jobId), job);
+      jobsById.set(job.jobId, job);
     }
 
     const upserts: any[] = [];
-    const mismatches: Array<{ file: string; jobIdInFile: number | null }> = [];
+    const mismatches: Array<{ file: string; jobIdInFile: string | null }> = [];
 
     for (const file of files) {
       const base = path.basename(file.originalname); // final_output_<jobId>.csv
-      const match = base.match(/final_output_(\d+)\.csv$/i);
+      const match = base.match(/final_output_([a-f0-9-]{36})\.csv$/i);
 
       if (!match) {
         console.warn(`File ${base} does not match pattern final_output_<jobId>.csv, skipping.`);
@@ -91,7 +91,7 @@ app.post("/receive", upload.array("files"), async (req, res) => {
         continue;
       }
 
-      const jobIdFromFile = Number(match[1]);
+      const jobIdFromFile = match[1];
       const job = jobsById.get(jobIdFromFile);
 
       if (!job) {
@@ -285,7 +285,7 @@ app.post("/decisions", async (req, res) => {
       const dataType = (filter?.dataType as string as "all" | "clean" | "incomplete") || "all";
       const listId = filter?.listId;
       const listName = filter?.listName;
-      
+
       const startedByBot = filter?.startedByBot;
       const filterObject = Object.fromEntries(
         Object.entries({

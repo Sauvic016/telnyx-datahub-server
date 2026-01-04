@@ -3,7 +3,7 @@ import path, { dirname } from "path";
 import prisma from "../db";
 import { fileExists } from "../utils/helper";
 
-export const sendRecordForJob = async (jobId: number): Promise<Record<string, unknown>[]> => {
+export const sendRecordForJob = async (jobId: string): Promise<Record<string, unknown>[]> => {
   const job = await prisma.botJobs.findFirst({
     where: { jobId },
   });

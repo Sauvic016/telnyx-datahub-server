@@ -50,15 +50,12 @@ router.get("/api/bot-jobs", async (req, res) => {
 router.get("/api/bot-jobs/:jobId", async (req, res) => {
   try {
     const jobId = req.params.jobId;
-    const records = await sendRecordForJob(Number(jobId));
+    const records = await sendRecordForJob(jobId);
     res.json(records);
   } catch (err) {
     console.error("Error fetching BotJob:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
-
-
 
 export default router;

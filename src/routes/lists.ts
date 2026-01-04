@@ -155,8 +155,8 @@ router.get("/:id", async (req, res) => {
     }
 
     // 4. Group by Job ID
-    const recordsByJobId = new Map<number, any[]>();
-    const jobIds = new Set<number>();
+    const recordsByJobId = new Map<string, any[]>();
+    const jobIds = new Set<string>();
 
     for (const doc of mongoRecords) {
       const jobId = doc.jobId;

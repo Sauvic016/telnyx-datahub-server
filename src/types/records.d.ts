@@ -5,7 +5,7 @@ export interface RowStatus {
   mailing_address: string;
   property_address: string[];
   lists: string[];
-  jobId: number;
+  jobId: string;
   contactId?: string;
   directSkipId?: number;
   skipTracedAt?: Date | null;
@@ -17,7 +17,7 @@ export interface RowStatus {
 }
 
 export interface JobCheckResult {
-  jobId: number;
+  jobId: string;
   startedByBot: string;
   flow: string[];
   records: RowStatus[];

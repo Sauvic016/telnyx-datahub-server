@@ -6,20 +6,11 @@ const router = express.Router();
 
 router.post("/internal/bot-jobs/sync", async (req, res) => {
   try {
-    const {
-      jobId,
-      status,
-      currentBotId,
-      startedByBotId,
-      type,
-      serverIp,
-      createdAt,
-      updatedAt,
-    } = req.body ?? {};
+    const { jobId, status, currentBotId, startedByBotId, type, serverIp, createdAt, updatedAt } = req.body ?? {};
 
     // Basic validation
-    if (typeof jobId !== "number") {
-      return res.status(400).json({ error: "jobId (number) is required" });
+    if (typeof jobId !== "string") {
+      return res.status(400).json({ error: "jobId (string) is required" });
     }
     if (!status || typeof status !== "string") {
       return res.status(400).json({ error: "status (string) is required" });
@@ -32,10 +23,8 @@ router.post("/internal/bot-jobs/sync", async (req, res) => {
     }
 
     // Parse dates if provided, otherwise default to now
-    const createdAtDate =
-      createdAt && typeof createdAt === "string" ? new Date(createdAt) : new Date();
-    const updatedAtDate =
-      updatedAt && typeof updatedAt === "string" ? new Date(updatedAt) : new Date();
+    const createdAtDate = createdAt && typeof createdAt === "string" ? new Date(createdAt) : new Date();
+    const updatedAtDate = updatedAt && typeof updatedAt === "string" ? new Date(updatedAt) : new Date();
 
     // Optional: guard JobType enum cast (if you want to be strict)
     let jobType: JobType;
