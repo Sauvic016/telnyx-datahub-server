@@ -24,8 +24,11 @@ router.get("/", async (req, res) => {
 
     const formattedLists = await Promise.all(
       lists.map(async ({ id, name }) => {
+        // const count = await ScrappedData.countDocuments({
+        //   currList: { $regex: name, $options: "i" },
+        // });
         const count = await ScrappedData.countDocuments({
-          currList: { $regex: name, $options: "i" },
+          currList: name,
         });
 
         return { id, name, countofRecords: count };

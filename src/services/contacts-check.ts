@@ -42,45 +42,71 @@ interface IRecordFilter {
 const recordGetter = async (
   page: number,
   limit: number,
-  recordTab?: "all" | "clean" | "incomplete",
+  recordTab: "all" | "clean" | "incomplete" = "all",
   filter?: IRecordFilter
 ) => {
   const skip = (page - 1) * limit;
 
-  // Build match object dynamically
   const match: any = {};
-  if (filter?.botId !== undefined) match.botId = filter.botId;
+
+  if (recordTab === "clean") {
+    match.clean = true;
+  } else if (recordTab === "incomplete") {
+    match.clean = false;
+  }
+  // recordTab === "all" → no clean filter
+
+  if (filter?.botId !== undefined) {
+    match.botId = filter.botId;
+  }
+
   if (filter?.listName) {
-    match.currList = { $regex: filter.listName, $options: "i" };
+    match.currList = filter.listName;
   }
-  if (filter?.isListChanged !== undefined) match.isListChanged = filter.isListChanged;
 
-  const pipeline: any = [];
+  // if (filter?.isListChanged) {
+  //   match.$or = [{ currList: { $ne: [] } }, { prevList: { $ne: [] } }];
+  // }
+  if (filter?.isListChanged) {
+    match.$or = [{ "currList.0": { $exists: true } }, { "prevList.0": { $exists: true } }];
+  }
 
-  if (recordTab === "incomplete") {
-    pipeline.push({
-      $match: {
-        clean: false,
+  // const pipeline: any = [];
+
+  // if (recordTab === "incomplete") {
+  //   pipeline.push({
+  //     $match: {
+  //       clean: false,
+  //     },
+  //   });
+  // } else if (recordTab === "clean") {
+  //   pipeline.push({
+  //     $match: {
+  //       clean: true,
+  //     },
+  //   });
+  // } else {
+  // }
+
+  // if (Object.keys(match).length > 0) {
+  //   pipeline.push({ $match: match });
+  // }
+
+  // pipeline.push({
+  //   $facet: {
+  //     data: [{ $sort: { updatedAt: -1 } }, { $skip: skip }, { $limit: limit }],
+  //     totalCount: [{ $count: "count" }],
+  //   },
+  // });
+  const pipeline: any[] = [
+    { $match: match },
+    {
+      $facet: {
+        data: [{ $sort: { updatedAt: -1 } }, { $skip: skip }, { $limit: limit }],
+        totalCount: [{ $count: "count" }],
       },
-    });
-  } else if (recordTab === "clean") {
-    pipeline.push({
-      $match: {
-        clean: true,
-      },
-    });
-  }
-
-  if (Object.keys(match).length > 0) {
-    pipeline.push({ $match: match });
-  }
-
-  pipeline.push({
-    $facet: {
-      data: [{ $sort: { updatedAt: -1 } }, { $skip: skip }, { $limit: limit }],
-      totalCount: [{ $count: "count" }],
     },
-  });
+  ];
 
   const result = await ScrappedData.aggregate(pipeline);
 
