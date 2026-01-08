@@ -50,3 +50,22 @@ export async function fileExists(filePath: string) {
     return false; // file does NOT exist
   }
 }
+
+export function pickField(doc: any, candidates: string[]): string {
+  const normalize = (s: string) => s.trim().toLowerCase().replace(/^"|"$/g, "");
+
+  for (const cand of candidates) {
+    const candNorm = normalize(cand);
+
+    // Check for exact match first
+    if (doc[cand]) return String(doc[cand]);
+
+    // Check for normalized match
+    for (const key of Object.keys(doc)) {
+      if (normalize(key) === candNorm) {
+        return String(doc[key]);
+      }
+    }
+  }
+  return "";
+}

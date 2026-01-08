@@ -1,5 +1,7 @@
+import pd from "nodejs-polars";
+import path, { dirname } from "path";
 import prisma from "../db";
-import { ScrappedData } from "../models/ScrappedData";
+import { fileExists } from "../utils/helper";
 
 export const sendRecordForJob = async (jobId: string): Promise<Record<string, unknown>[]> => {
   const job = await prisma.botJobs.findFirst({
@@ -11,11 +13,29 @@ export const sendRecordForJob = async (jobId: string): Promise<Record<string, un
     return [];
   }
 
+  const filePath = path.join(process.cwd(), "job_result", `final_output_${jobId}.csv`);
+
+  if (!(await fileExists(filePath))) {
+    return [];
+  }
+
   try {
-    const records = await ScrappedData.find({ jobId }).lean();
-    return records as unknown as Record<string, unknown>[];
+    const df = pd.readCSV(filePath);
+
+    const columns = df.columns;
+    const rowsArray = df.rows(); // array of arrays
+
+    const rows = rowsArray.map((row) => {
+      const obj: Record<string, unknown> = {};
+      row.forEach((value, idx) => {
+        obj[columns[idx]] = value;
+      });
+      return obj;
+    });
+
+    return rows;
   } catch (err) {
-    console.error(`Failed to fetch records from MongoDB for jobId=${jobId}`, err);
+    console.error(`Failed to read CSV for jobId=${jobId} at ${filePath}`, err);
     return [];
   }
 };

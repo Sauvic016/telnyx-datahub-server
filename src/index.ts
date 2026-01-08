@@ -18,8 +18,9 @@ import jobSyncRouter from "./routes/job-sync";
 import { processSkipTraceResponse } from "./services/skip-trace-processing";
 import listsRouter from "./routes/lists";
 import { getCompletedData, getCompletedDataForContactId } from "./services/completed-data";
+
 import { BOTMAP } from "./utils/constants";
-import { ScrappedData } from "./models/ScrappedData";
+import { Owner } from "./models/Owner";
 import { syncScrappedDataOptimized } from "./services/mongo-sync-optimized";
 
 const app = express();
@@ -245,7 +246,7 @@ app.get("/new-data-records", async (req, res) => {
 
     const filterObject = Object.fromEntries(
       Object.entries({
-        isListChanged: true,
+        isNewDataSection: true,
         listName,
         listId,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
@@ -275,7 +276,8 @@ app.get("/new-data-records", async (req, res) => {
 app.post("/decisions", async (req, res) => {
   try {
     const body = req.body;
-    let identityKeyList: any[] = [];
+    let ownerIdList: any[] = [];
+    let totalKeyList: any[] = [];
 
     // Check if it's a bulk request
     if (body.isBulk) {
@@ -289,49 +291,77 @@ app.post("/decisions", async (req, res) => {
       const startedByBot = filter?.startedByBot;
       const filterObject = Object.fromEntries(
         Object.entries({
+          isNewDataSection: filter?.isNewDataPage,
           listName,
           listId,
           botId: startedByBot ? Number(startedByBot) : undefined,
         }).filter(([_, v]) => v !== undefined)
       );
       const { items, total } = await recordGetter(1, limit, dataType, filterObject);
-      identityKeyList = items.map((r: any) => r.identityKey);
+
+      ownerIdList = items.map((r: any) => r._id.toString());
+      totalKeyList = items.map((r: any) => ({
+        identityKey: r.identityKey,
+        ownerId: r._id.toString(),
+        propertyId: r.property._id.toString(),
+      }));
     } else {
-      identityKeyList = body.map((b: any) => b.identityKey);
-      console.log("single ", identityKeyList);
+      ownerIdList = body.map((b: any) => b.ownerId);
+
+      totalKeyList = body.map((r: any) => ({
+        ownerId: r.ownerId,
+        identityKey: r.identityKey,
+        propertyId: r.propertyId,
+      }));
     }
 
-    if (!identityKeyList.length) {
+    if (!ownerIdList.length) {
       return res.status(400).json({
         error: "Identity list cannot be empty, select atleast one record",
       });
     }
+    let ownerIdSet = new Set(ownerIdList);
+    ownerIdList = [...ownerIdSet];
 
     await prisma.$transaction(
-      identityKeyList.map((key) =>
-        prisma.pipeline.upsert({
-          where: { identityKey: key },
-          update: {
-            decision: ProcessingStage.APPROVED,
-            stage: ProcessingStage.APPROVED,
-            updatedAt: new Date(),
-          },
-          create: { identityKey: key, decision: ProcessingStage.APPROVED, stage: ProcessingStage.APPROVED },
-        })
-      )
+      totalKeyList
+        .filter((key) => key.propertyId && key.ownerId)
+        .map((key) =>
+          prisma.pipeline.upsert({
+            where: {
+              ownerId_propertyId: {
+                ownerId: key.ownerId,
+                propertyId: key.propertyId,
+              },
+            },
+            update: {
+              decision: ProcessingStage.APPROVED,
+              stage: ProcessingStage.APPROVED,
+              updatedAt: new Date(),
+            },
+            create: {
+              decision: ProcessingStage.APPROVED,
+              stage: ProcessingStage.APPROVED,
+              ownerId: key.ownerId,
+              propertyId: key.propertyId,
+            },
+          })
+        )
     );
-    await ScrappedData.updateMany(
-      { identityKey: { $in: identityKeyList } },
+
+    await Owner.updateMany(
+      { _id: { $in: ownerIdList } },
       {
         $set: {
           decision: ProcessingStage.APPROVED,
           stage: ProcessingStage.APPROVED,
         },
-      }
+      },
+      { strict: false }
     );
 
     try {
-      await sendApprovedToDirectSkip(identityKeyList);
+      await sendApprovedToDirectSkip(totalKeyList);
     } catch (error) {
       console.error("[/decisions] ❌ Failed to create DirectSkip batches:", error);
       return res.status(500).json({
@@ -342,10 +372,11 @@ app.post("/decisions", async (req, res) => {
     res.json({
       success: true,
       summary: {
-        total: identityKeyList.length,
+        total: ownerIdList.length,
       },
-      message: `${identityKeyList.length} record(s) queued for DirectSkip processing.`,
+      message: `${ownerIdList.length} record(s) queued for DirectSkip processing.`,
     });
+    return;
   } catch (error) {
     console.error("Error in /decisions:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -408,7 +439,8 @@ app.get("/completed-data", async (req, res) => {
     const skip = (page - 1) * limit;
     const listName = req.query.listName as string | undefined;
 
-    const result = await getCompletedData({ listName });
+    const result = (await getCompletedData({ listName })) || [];
+
     const totalItems = result.length;
     const paginatedData = result.slice(skip, skip + limit);
 
@@ -437,6 +469,7 @@ app.get("/record-detail/:id", async (req, res) => {
 
   try {
     const contact = await getCompletedDataForContactId(contactId);
+
     // const contact = await prisma.contacts.findUnique({
     //   where: { id: contactId },
     //   include: {

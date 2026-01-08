@@ -83,16 +83,20 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
 
     const callerId = classifyCallerId(callerName, firstName, lastName);
 
-    const existingForContact = await prisma.contact_phones.findFirst({
-      where: {
-        contact_id: contactId,
-        OR: [{ phone_number: e164 }, { phone_number: normalized }],
-      },
-    });
+    const candidatePhoneId = crypto.randomUUID();
 
-    const phoneId = existingForContact?.id || crypto.randomUUID();
+    let phoneId!: string;
 
     await prisma.$transaction(async (tx) => {
+      const existingForContact = await tx.contact_phones.findFirst({
+        where: {
+          contact_id: contactId,
+          OR: [{ phone_number: e164 }, { phone_number: normalized }],
+        },
+      });
+
+      phoneId = existingForContact?.id ?? candidatePhoneId;
+
       const lookupRecord = await tx.telynxLookup.upsert({
         where: { phone_number: e164 },
         update: {
@@ -167,6 +171,8 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
           portability_state: telnyxResult.data!.portability?.state,
         },
       });
+
+      // console.log(`[PhoneValidation] Upserted TelynxLookup record ID: ${lookupRecord.id}`);
 
       if (existingForContact) {
         await tx.contact_phones.update({

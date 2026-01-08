@@ -1,5 +1,6 @@
 import axios from "axios";
-import { ScrappedData } from "../models/ScrappedData";
+import { Owner } from "../models/Owner";
+import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
 import { ProcessingStage } from "../generated/prisma/enums";
 import dotenv from "dotenv";
@@ -7,62 +8,103 @@ dotenv.config();
 
 const DIRECTSKIP_SERVER_URL = process.env.DIRECTSKIP_SERVER_URL || "http://localhost:4000";
 
-export async function sendApprovedToDirectSkip(identityKeyList: string[]): Promise<number> {
-  if (!identityKeyList || identityKeyList.length === 0) {
+type TotalKeyListType = {
+  identityKey: string;
+  ownerId: string;
+  propertyId: string;
+};
+
+function isPOBox(address?: string | null): boolean {
+  if (!address) return false;
+  return /\bp\s*\.?\s*o\s*\.?\s*box\b/i.test(address);
+}
+
+export async function sendApprovedToDirectSkip(totalKeyList: TotalKeyListType[]): Promise<number> {
+  if (!totalKeyList || totalKeyList.length === 0) {
     console.warn("[DirectSkip] No approved identityKeys provided");
-    return identityKeyList.length;
+    return 0;
   }
 
-  console.log(`[DirectSkip] Preparing ${identityKeyList.length} approved records`);
+  console.log(`[DirectSkip] Preparing ${totalKeyList.length} approved records`);
 
-  // Query MongoDB documents by identityKey
-  const docs = await ScrappedData.find({
-    identityKey: { $in: identityKeyList },
+  const ownerIds = [...new Set(totalKeyList.map((k) => k.ownerId))];
+  const propertyIds = [...new Set(totalKeyList.map((k) => k.propertyId))];
+  const identityKeys = [...new Set(totalKeyList.map((k) => k.identityKey))];
+  console.log(totalKeyList);
+
+  const docs = await Owner.find({
+    _id: { $in: ownerIds },
   }).lean();
+
+  const propertyDocs = await PropertyData.find({
+    _id: { $in: propertyIds },
+  });
 
   if (docs.length === 0) {
     console.warn(`[DirectSkip] No matching documents found in MongoDB for approved identityKeys`);
-    return identityKeyList.length;
+    return totalKeyList.length;
   }
 
   console.log(`[DirectSkip] Found ${docs.length} matching documents in MongoDB`);
 
-  const rowsToSend = docs.map((doc) => ({
-    firstName: doc.owner_first_name,
-    lastName: doc.owner_last_name,
-    mailingAddress: doc.mailing_address,
-    mailingCity: doc.mailing_city,
-    mailingState: doc.mailing_state,
-    mailingZip: doc.mailing_zip_code,
-    propertyAddress: doc.property_address,
-    propertyCity: doc.property_city,
-    propertyState: doc.property_state,
-    propertyZip: doc.property_zip_code,
-    identityKey: doc.identityKey,
-  }));
+  const ownerMap = new Map(docs.map((doc: any) => [doc._id.toString(), doc]));
+  const propertyMap = new Map(propertyDocs.map((doc: any) => [doc._id.toString(), doc]));
+  console.log("ownerMap", ownerMap);
+
+  const rowsToSend = totalKeyList
+    .map((item) => {
+      const ownerDetail = ownerMap.get(item.ownerId);
+
+      const propertyForOwnerDetail = propertyMap.get(item.propertyId);
+      if (!ownerDetail || !propertyForOwnerDetail) return null;
+
+      return {
+        firstName: ownerDetail.owner_first_name,
+        lastName: ownerDetail.owner_last_name,
+        mailingAddress: isPOBox(ownerDetail.mailing_address)
+          ? propertyForOwnerDetail.property_address
+          : ownerDetail.mailing_address,
+        mailingCity: ownerDetail.mailing_city,
+        mailingState: ownerDetail.mailing_state,
+        mailingZip: ownerDetail.mailing_zip_code,
+        propertyAddress: propertyForOwnerDetail.property_address || "",
+        propertyCity: propertyForOwnerDetail.property_city || "",
+        propertyState: propertyForOwnerDetail.property_state || "",
+        propertyZip: propertyForOwnerDetail.property_zip_code || "",
+        identityKey: ownerDetail.identityKey,
+        propertyId: item.propertyId,
+        ownerId: item.ownerId,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null);
+  console.log(rowsToSend);
 
   // Update rows to SENT_TO_DIRECTSKIP using Pipeline table
   await prisma.pipeline.updateMany({
     where: {
-      identityKey: { in: identityKeyList },
+      ownerId: { in: ownerIds },
+      propertyId: { in: propertyIds },
     },
     data: {
       stage: ProcessingStage.SENT_TO_DIRECTSKIP,
     },
   });
-  await ScrappedData.updateMany(
-    { identityKey: { $in: identityKeyList } },
+
+  await Owner.updateMany(
+    { _id: { $in: ownerIds } },
     {
       $set: {
         stage: ProcessingStage.SENT_TO_DIRECTSKIP,
       },
-    }
+    },
+    { strict: false }
   );
 
   try {
     await axios.post(`${DIRECTSKIP_SERVER_URL}/run-directskip`, {
       rows: rowsToSend,
     });
+    console.log("Sent to directSkip");
   } catch (error) {
     console.error(`[DirectSkip] ❌ Error sending to directskip server}:`, error);
     throw error;

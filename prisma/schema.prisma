@@ -431,17 +431,17 @@ model BotJobs {
 }
 
 model Pipeline {
-  identityKey String @id
+  ownerId    String
+  propertyId String
 
-  // This single field replaces BotOutputRowDecision.status
   decision RowDecisionStatus @default(PENDING)
-
-  // Pipeline state
-  stage ProcessingStage @default(PENDING)
+  stage    ProcessingStage   @default(PENDING)
 
   error     String?
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
+
+  @@id([ownerId, propertyId])
 }
 
 model TelynxLookup {

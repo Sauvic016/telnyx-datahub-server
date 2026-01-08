@@ -1,44 +1,14 @@
-import prisma from "../db";
-import { getFlowNames, makeIdentityKey } from "../utils/helper";
-import { DirectSkipStatus, RowDecisionStatus } from "../generated/prisma/enums";
-import { ScrappedData } from "../models/ScrappedData";
-import { BOTMAP } from "../utils/constants";
-import { RowStatus } from "../types/records";
+import { Owner } from "../models/Owner";
+import { PropertyData } from "../models/PropertyData";
 
-// export interface JobCheckResult {
-//   jobId: number;
-//   startedByBot: string;
-//   flow: string[];
-//   records: RowStatus[];
-// }
-
-export function pickField(doc: any, candidates: string[]): string {
-  const normalize = (s: string) => s.trim().toLowerCase().replace(/^"|"$/g, "");
-
-  for (const cand of candidates) {
-    const candNorm = normalize(cand);
-
-    // Check for exact match first
-    if (doc[cand]) return String(doc[cand]);
-
-    // Check for normalized match
-    for (const key of Object.keys(doc)) {
-      if (normalize(key) === candNorm) {
-        return String(doc[key]);
-      }
-    }
-  }
-  return "";
-}
-
-/**
- * Fetch data from MongoDB and check against contacts in Postgres
- */
 interface IRecordFilter {
   botId?: number;
   listName?: string;
-  isListChanged?: boolean;
+  isNewDataSection?: boolean;
+  startDate?: string;
+  endDate?: string;
 }
+
 const recordGetter = async (
   page: number,
   limit: number,
@@ -47,72 +17,182 @@ const recordGetter = async (
 ) => {
   const skip = (page - 1) * limit;
 
-  const match: any = {};
+  const pipeline: any[] = [];
 
-  if (recordTab === "clean") {
-    match.clean = true;
-  } else if (recordTab === "incomplete") {
-    match.clean = false;
-  }
-  // recordTab === "all" → no clean filter
+  /* --------------------------------------------------
+     1️⃣ OWNER-LEVEL FILTERS (ONLY OWNER FIELDS)
+  -------------------------------------------------- */
+
+  const ownerMatch: any = {};
 
   if (filter?.botId !== undefined) {
-    match.botId = filter.botId;
+    ownerMatch.botId = filter.botId;
   }
+
+  pipeline.push({ $match: ownerMatch });
+
+  /* --------------------------------------------------
+     2️⃣ ONE ROW PER PROPERTY
+  -------------------------------------------------- */
+
+  pipeline.push({
+    $unwind: {
+      path: "$propertyIds",
+      preserveNullAndEmptyArrays: false,
+    },
+  });
+
+  /* --------------------------------------------------
+     3️⃣ LOOKUP PROPERTY DATA
+  -------------------------------------------------- */
+
+  pipeline.push({
+    $lookup: {
+      from: "propertydatas",
+      localField: "propertyIds",
+      foreignField: "_id",
+      as: "property",
+    },
+  });
+
+  pipeline.push({
+    $unwind: {
+      path: "$property",
+      preserveNullAndEmptyArrays: false,
+    },
+  });
+
+  /* --------------------------------------------------
+     4️⃣ CLEAN / INCOMPLETE LOGIC (✔️ CORRECT PLACE)
+  -------------------------------------------------- */
+
+  if (recordTab === "clean") {
+    pipeline.push({
+      $match: {
+        clean: { $eq: true }, // Owner.clean
+        "property.clean": { $eq: true }, // PropertyData.clean
+      },
+    });
+  }
+
+  if (recordTab === "incomplete") {
+    pipeline.push({
+      $match: {
+        $or: [{ clean: { $ne: true } }, { "property.clean": { $ne: true } }],
+      },
+    });
+  }
+
+  /* --------------------------------------------------
+     5️⃣ PROPERTY-LEVEL FILTERS
+  -------------------------------------------------- */
+
+  const propertyMatch: any = {};
 
   if (filter?.listName) {
-    match.currList = filter.listName;
+    propertyMatch["property.currList"] = {
+      $elemMatch: { name: filter.listName },
+    };
   }
 
-  // if (filter?.isListChanged) {
-  //   match.$or = [{ currList: { $ne: [] } }, { prevList: { $ne: [] } }];
-  // }
-  if (filter?.isListChanged) {
-    match.$or = [{ "currList.0": { $exists: true } }, { "prevList.0": { $exists: true } }];
+  if (filter?.startDate || filter?.endDate) {
+    propertyMatch["property.syncedAt"] = {};
+    if (filter.startDate) {
+      propertyMatch["property.syncedAt"].$gte = new Date(filter.startDate);
+    }
+    if (filter.endDate) {
+      propertyMatch["property.syncedAt"].$lte = new Date(filter.endDate);
+    }
   }
 
-  // const pipeline: any = [];
+  if (Object.keys(propertyMatch).length > 0) {
+    pipeline.push({ $match: propertyMatch });
+  }
 
-  // if (recordTab === "incomplete") {
-  //   pipeline.push({
-  //     $match: {
-  //       clean: false,
-  //     },
-  //   });
-  // } else if (recordTab === "clean") {
-  //   pipeline.push({
-  //     $match: {
-  //       clean: true,
-  //     },
-  //   });
-  // } else {
-  // }
+  /* --------------------------------------------------
+     6️⃣ SORTING
+  -------------------------------------------------- */
 
-  // if (Object.keys(match).length > 0) {
-  //   pipeline.push({ $match: match });
-  // }
-
-  // pipeline.push({
-  //   $facet: {
-  //     data: [{ $sort: { updatedAt: -1 } }, { $skip: skip }, { $limit: limit }],
-  //     totalCount: [{ $count: "count" }],
-  //   },
-  // });
-  const pipeline: any[] = [
-    { $match: match },
-    {
-      $facet: {
-        data: [{ $sort: { updatedAt: -1 } }, { $skip: skip }, { $limit: limit }],
-        totalCount: [{ $count: "count" }],
+  if (filter?.isNewDataSection && filter?.listName) {
+    pipeline.push({
+      $addFields: {
+        sortKey: {
+          $let: {
+            vars: {
+              targetList: {
+                $arrayElemAt: [
+                  {
+                    $filter: {
+                      input: { $ifNull: ["$property.currList", []] },
+                      as: "item",
+                      cond: { $eq: ["$$item.name", filter.listName] },
+                    },
+                  },
+                  0,
+                ],
+              },
+            },
+            in: "$$targetList.list_updated_at",
+          },
+        },
       },
+    });
+    pipeline.push({ $sort: { sortKey: -1 } });
+  } else if (filter?.isNewDataSection) {
+    pipeline.push({
+      $addFields: {
+        sortKey: { $max: "$property.currList.list_updated_at" },
+      },
+    });
+    pipeline.push({ $sort: { sortKey: -1 } });
+  } else {
+    pipeline.push({ $sort: { "property.updatedAt": -1 } });
+  }
+
+  /* --------------------------------------------------
+     7️⃣ FINAL SHAPE
+  -------------------------------------------------- */
+
+  pipeline.push({
+    $project: {
+      identityKey: 1,
+      owner_first_name: 1,
+      owner_last_name: 1,
+      company_name_full_name: 1,
+      mailing_address: 1,
+      stage: 1,
+      decision: 1,
+      mailing_city: 1,
+      mailing_state: 1,
+      mailing_zip_code: 1,
+      botId: 1,
+      clean: 1,
+      inPostgres: 1,
+      property: 1,
     },
-  ];
+  });
 
-  const result = await ScrappedData.aggregate(pipeline);
+  /* --------------------------------------------------
+     8️⃣ PAGINATION + TOTAL COUNT
+  -------------------------------------------------- */
 
-  const items = result[0].data;
-  const total = result[0].totalCount[0]?.count || 0;
+  pipeline.push({
+    $facet: {
+      data: [{ $skip: skip }, { $limit: limit }],
+      totalCount: [{ $count: "count" }],
+    },
+  });
+
+  /* --------------------------------------------------
+     9️⃣ EXECUTE
+  -------------------------------------------------- */
+
+  const result = await Owner.aggregate(pipeline);
+
+  const items = result[0]?.data ?? [];
+  const total = result[0]?.totalCount?.[0]?.count ?? 0;
 
   return { items, total };
 };
+
 export default recordGetter;

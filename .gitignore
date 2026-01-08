@@ -5,3 +5,5 @@ job_result/
 dist/
 *.tsx
 *.txt
+
+*.json

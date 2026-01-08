@@ -1,4 +1,7 @@
 import prisma from "../db";
+import { Prisma } from "../generated/prisma/client";
+import { Owner } from "../models/Owner";
+import { PropertyData } from "../models/PropertyData";
 
 export const getCompletedData = async (filters?: { listName?: string }) => {
   // 1. Fetch all approved pipeline items
@@ -7,51 +10,122 @@ export const getCompletedData = async (filters?: { listName?: string }) => {
       decision: "APPROVED",
     },
     select: {
-      identityKey: true,
+      propertyId: true,
+      ownerId: true,
       stage: true,
     },
   });
 
-  // Create a map for quick stage lookup by identityKey
   const stageMap = new Map<string, string>();
-  completedData.forEach((item) => {
-    stageMap.set(item.identityKey, item.stage);
+
+  completedData.forEach(({ ownerId, propertyId, stage }) => {
+    stageMap.set(`${ownerId}|${propertyId}`, stage);
   });
 
-  const identityKeys = completedData.map((item) => item.identityKey);
+  const ownerPropertyMap = new Map<string, Set<string>>();
 
-  const contactDetails = identityKeys.map((identityKey) => {
-    const [firstName, lastName, mailingAddress] = identityKey.split("|");
-    return {
-      firstName,
-      lastName,
-      mailingAddress,
-    };
+  for (const { ownerId, propertyId } of completedData) {
+    if (!ownerPropertyMap.has(ownerId)) {
+      ownerPropertyMap.set(ownerId, new Set());
+    }
+    ownerPropertyMap.get(ownerId)!.add(propertyId);
+  }
+  const owners = await Owner.find({
+    _id: { $in: [...ownerPropertyMap.keys()] },
+  }).populate("propertyIds");
+
+  const result = owners.flatMap((owner) => {
+    const allowedPropertyIds = ownerPropertyMap.get(owner._id.toString());
+
+    if (!allowedPropertyIds) return [];
+
+    return owner.propertyIds
+      .filter((p: any) => allowedPropertyIds.has(p._id.toString()))
+      .map((p: any) => {
+        const stage = stageMap.get(`${owner._id.toString()}|${p._id.toString()}`) ?? "UNKNOWN";
+
+        return {
+          ...owner.toObject(),
+          _id: owner._id,
+          property: p,
+          stage, // ✅ ATTACHED HERE
+        };
+      });
   });
+
+  const validResult = result.filter(
+    (item) =>
+      item.owner_first_name &&
+      item.owner_last_name &&
+      item.mailing_address &&
+      item.property?.property_address &&
+      item.property?.property_city &&
+      item.property?.property_state &&
+      item.property?.property_zip_code
+  );
 
   // Build the where clause
   const contactData = await prisma.$transaction(async (tx) => {
-    const whereClause: any = {
-      OR: contactDetails.map((item) => ({
-        first_name: { equals: item.firstName, mode: "insensitive" },
-        last_name: { equals: item.lastName, mode: "insensitive" },
-        mailing_address: { equals: item.mailingAddress, mode: "insensitive" },
-      })),
-    };
-
-    if (filters?.listName) {
-      whereClause.property_details = {
-        some: {
-          lists: {
-            some: {
-              list: {
-                name: { equals: filters.listName, mode: "insensitive" },
+    const whereClause: Prisma.contactsWhereInput = {
+      OR: validResult.map(
+        (item): Prisma.contactsWhereInput => ({
+          AND: [
+            {
+              first_name: {
+                equals: item.owner_first_name!,
+                mode: Prisma.QueryMode.insensitive,
               },
             },
-          },
-        },
-      };
-    }
+            {
+              last_name: {
+                equals: item.owner_last_name!,
+                mode: Prisma.QueryMode.insensitive,
+              },
+            },
+            {
+              mailing_address: {
+                equals: item.mailing_address!,
+                mode: Prisma.QueryMode.insensitive,
+              },
+            },
+            {
+              property_details: {
+                some: {
+                  property_address: {
+                    equals: item.property.property_address,
+                    mode: Prisma.QueryMode.insensitive,
+                  },
+                  property_city: {
+                    equals: item.property.property_city,
+                    mode: Prisma.QueryMode.insensitive,
+                  },
+                  property_state: {
+                    equals: item.property.property_state,
+                    mode: Prisma.QueryMode.insensitive,
+                  },
+                  property_zip: {
+                    equals: String(item.property.property_zip_code),
+                    mode: Prisma.QueryMode.insensitive,
+                  },
+                  ...(filters?.listName && {
+                    lists: {
+                      some: {
+                        list: {
+                          name: {
+                            equals: filters.listName,
+                            mode: Prisma.QueryMode.insensitive,
+                          },
+                        },
+                      },
+                    },
+                  }),
+                },
+              },
+            },
+          ],
+        })
+      ),
+    };
 
     const contactData = await tx.contacts.findMany({
       where: whereClause,
@@ -94,24 +168,68 @@ export const getCompletedData = async (filters?: { listName?: string }) => {
     return contactData;
   });
 
-  // Transform the data to include formatted relatives and new fields
-  // Transform the data to include formatted relatives and new fields
-  const formattedData = contactData.map((contact) => formatContactData(contact, stageMap));
+  const expanded = contactData.flatMap((contact) => {
+    let matches = validResult.filter((r) => contact.property_details.some((pd) => isSameProperty(r.property, pd)));
 
-  return formattedData;
+    if (filters?.listName) {
+      matches = matches.filter((m) => {
+        const pd = contact.property_details.find((d) => isSameProperty(m.property, d));
+        return pd?.lists.some((l) => l.list.name === filters.listName);
+      });
+    }
+
+    return matches.map((m) => formatContactData(contact, m.stage, m.property));
+  });
+  return expanded;
+  // const formatedData = contactData.map((contact) => formatContactData(contact, "NUMBERLOOKUP_COMPLETED"));
+  // return
 };
 
-const formatContactData = (contact: any, stageMap?: Map<string, string>) => {
-  // Reconstruct identityKey to look up stage if map is provided, otherwise use what's available
-  let stage = "UNKNOWN";
-  if (stageMap) {
-    const identityKey = `${contact.first_name?.toLowerCase()}|${contact.last_name?.toLowerCase()}|${contact.mailing_address?.toLowerCase()}`;
-    stage = stageMap.get(identityKey) || "UNKNOWN";
-  } else if (contact.pipeline_stage) {
-    stage = contact.pipeline_stage;
-  }
+// const formatContactData = (contact: any, stage = "UNKNOWN") => {
+//   const relatives = [
+//     ...contact.relationsFrom.map((rel: any) => ({
+//       first_name: rel.toContact.first_name,
+//       last_name: rel.toContact.last_name,
+//       contact_phones: rel.toContact.contact_phones.map((p: any) => ({
+//         ...p,
+//         callerId: p.telynxLookup?.caller_id,
+//         islookedup: !!p.telynxLookup,
+//       })),
+//     })),
+//     ...contact.relationsTo.map((rel: any) => ({
+//       first_name: rel.fromContact.first_name,
+//       last_name: rel.fromContact.last_name,
+//       contact_phones: rel.fromContact.contact_phones.map((p: any) => ({
+//         ...p,
+//         callerId: p.telynxLookup?.caller_id,
+//         islookedup: !!p.telynxLookup,
+//       })),
+//     })),
+//   ];
 
-  // Combine relatives from both directions (relationsFrom and relationsTo)
+//   return {
+//     id: contact.id,
+//     first_name: contact.first_name,
+//     last_name: contact.last_name,
+//     mailing_address: contact.mailing_address,
+//     mailing_city: contact.mailing_city,
+//     mailing_state: contact.mailing_state,
+//     mailing_zip: contact.mailing_zip,
+//     deceased: contact.deceased,
+//     age: contact.age,
+//     stage, // ✅ clean
+//     confirmedAddress: contact.directskips?.confirmedAddress,
+//     contact_phones: contact.contact_phones.map((phone: any) => ({
+//       ...phone,
+//       callerId: phone.telynxLookup?.caller_id,
+//       islookedup: !!phone.telynxLookup,
+//     })),
+//     property_details: contact.property_details,
+//     relatives,
+//   };
+// };
+
+const formatContactData = (contact: any, stage = "UNKNOWN", matchedProperty?: any) => {
   const relatives = [
     ...contact.relationsFrom.map((rel: any) => ({
       first_name: rel.toContact.first_name,
@@ -133,6 +251,10 @@ const formatContactData = (contact: any, stageMap?: Map<string, string>) => {
     })),
   ];
 
+  const filteredPropertyDetails = matchedProperty
+    ? contact.property_details.filter((pd: any) => isSameProperty(matchedProperty, pd))
+    : contact.property_details;
+
   return {
     id: contact.id,
     first_name: contact.first_name,
@@ -143,14 +265,20 @@ const formatContactData = (contact: any, stageMap?: Map<string, string>) => {
     mailing_zip: contact.mailing_zip,
     deceased: contact.deceased,
     age: contact.age,
-    stage: stage,
+    stage,
+
     confirmedAddress: contact.directskips?.confirmedAddress,
+
     contact_phones: contact.contact_phones.map((phone: any) => ({
       ...phone,
       callerId: phone.telynxLookup?.caller_id,
       islookedup: !!phone.telynxLookup,
     })),
-    property_details: contact.property_details,
+
+    // ✅ ONLY the matched property
+    property_details: filteredPropertyDetails[0],
+    all_properties: contact.property_details,
+
     relatives,
   };
 };
@@ -194,21 +322,18 @@ export const getCompletedDataForContactId = async (contactId: string) => {
     },
   });
 
-  if (!contact) return null;
-
-  // Get stage from pipeline
-  const identityKey = `${contact.first_name?.toLowerCase()}|${contact.last_name?.toLowerCase()}|${contact.mailing_address?.toLowerCase()}`;
-  const pipelineItem = await prisma.pipeline.findUnique({
-    where: { identityKey },
-    select: { stage: true },
-  });
-
-  const stage = pipelineItem?.stage || "UNKNOWN";
-
-  // Pass stage directly via a temporary property or modify helper to accept it
-  // Here I'll just pass a map with one entry for simplicity and reuse
-  const stageMap = new Map<string, string>();
-  stageMap.set(identityKey, stage);
-
-  return formatContactData(contact, stageMap);
+  // need to fix this one aswell
+  return formatContactData(contact, "NUMBERLOOKUP_COMPLETED");
 };
+
+const normalize = (v?: string | number | null) =>
+  String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+const isSameProperty = (a: any, b: any) =>
+  normalize(a.property_address) === normalize(b.property_address) &&
+  normalize(a.property_city) === normalize(b.property_city) &&
+  normalize(a.property_state) === normalize(b.property_state) &&
+  normalize(a.property_zip_code) === normalize(b.property_zip);

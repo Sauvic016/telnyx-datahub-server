@@ -2,8 +2,15 @@ import path from "path";
 import fs from "fs";
 import pl from "nodejs-polars";
 import { getLatestJobsPerBot, getAllJobs } from "../utils/helper";
-import { ScrappedData } from "../models/ScrappedData";
+import { Owner } from "../models/Owner";
+import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
+import mongoose from "../mongoose";
+
+type ListType = {
+  name: string;
+  list_updated_at: Date;
+};
 
 const mongoToPropertyDetailsMap: Record<string, string> = {
   // ─── PROPERTY ADDRESS ───────────────────────────
@@ -89,6 +96,31 @@ const mongoToPropertyDetailsMap: Record<string, string> = {
   // ─── OWNERSHIP / VALUE ──────────────────────────
   owned_since: "previous_sale_date",
   estimated_value: "estimated_value",
+
+  pay_all_current_taxes: "pay_all_current_taxes",
+  pay_current_installment: "pay_current_installment",
+  pay_delinquent_taxes: "pay_delinquent_taxes",
+  pay_second_installment: "pay_second_installment",
+  vacant_abandon: "vacant_abandon",
+
+  // ─── SPECIAL ASSESSMENTS ────────────────────────
+  special_assessment_amount_2021: "special_assessment_amount_2021",
+  special_assessment_amount_2022: "special_assessment_amount_2022",
+  special_assessment_amount_2023: "special_assessment_amount_2023",
+  special_assessment_amount_2024: "special_assessment_amount_2024",
+  special_assessment_amount_2025: "special_assessment_amount_2025",
+
+  special_assessments_2021: "special_assessments_2021",
+  special_assessments_2022: "special_assessments_2022",
+  special_assessments_2023: "special_assessments_2023",
+  special_assessments_2024: "special_assessments_2024",
+  special_assessments_2025: "special_assessments_2025",
+
+  special_assessments_code_2021: "special_assessments_code_2021",
+  special_assessments_code_2022: "special_assessments_code_2022",
+  special_assessments_code_2023: "special_assessments_code_2023",
+  special_assessments_code_2024: "special_assessments_code_2024",
+  special_assessments_code_2025: "special_assessments_code_2025",
 };
 
 function pickColumn(columns: string[], candidates: string[]): string | null {
@@ -103,15 +135,34 @@ function pickColumn(columns: string[], candidates: string[]): string | null {
   return null;
 }
 
-function makeIdentityKey(first: string, last: string, addr: string): string {
-  return `${first.trim().toLowerCase()}|${last.trim().toLowerCase()}|${addr.trim().toLowerCase()}`;
+function makeIdentityKey(first: string, second: string, third: string, fourth?: string): string {
+  if (fourth) {
+    return `${first.trim().toLowerCase()}|${second.trim().toLowerCase()}|${third.trim().toLowerCase()}|${fourth
+      .trim()
+      .toLowerCase()}`;
+  }
+  return `${first.trim().toLowerCase()}|${second.trim().toLowerCase()}|${third.trim().toLowerCase()}`;
 }
 
 export const syncScrappedDataOptimized = async () => {
   try {
     console.log("Starting MongoDB sync (Optimized)...");
+
     // const latestJobs = await getLatestJobsPerBot();
-    const latestJobs = await getAllJobs();
+    const latestJobs = [
+      {
+        jobId: "abc-123",
+        status: "COMPLETED",
+        currentBotId: null,
+        startedByBotId: "4",
+        type: "AUTOMATED",
+        serverIp: "abc",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        resultFilePath: "",
+      },
+    ];
+
     console.log(`Found ${latestJobs.length} jobs to process.`);
 
     for (const job of latestJobs) {
@@ -139,6 +190,7 @@ export const syncScrappedDataOptimized = async () => {
         const propertyZipCol = pickColumn(cols, ["property_zip", "Property Zip Code"]);
         const propertyCityCol = pickColumn(cols, ["property_city", "Property City"]);
         const propertyStateCol = pickColumn(cols, ["property_state", "Property State"]);
+        const parcelStateCol = pickColumn(cols, ["parcel", "Parcel"]);
 
         if (!firstNameCol && !lastNameCol && !mailingAddressCol) {
           console.warn(`Missing required identity columns in ${fileName}. Skipping.`);
@@ -156,119 +208,106 @@ export const syncScrappedDataOptimized = async () => {
         const propertyZipIdx = propertyZipCol ? cols.indexOf(propertyZipCol) : -1;
         const propertyCityIdx = propertyCityCol ? cols.indexOf(propertyCityCol) : -1;
         const propertyStateIdx = propertyStateCol ? cols.indexOf(propertyStateCol) : -1;
+        const parcelIndex = parcelStateCol ? cols.indexOf(parcelStateCol) : -1;
 
         // 1. Collect all valid identities from CSV to batch query Postgres & Mongo
-        const identityKeysInCsv = new Set<string>();
-        for (const row of rows) {
-          const first = String(row[fnIdx] ?? "").trim();
-          const last = String(row[lnIdx] ?? "").trim();
-          const addr = String(row[addrIdx] ?? "").trim();
-          if (first && last && addr) {
-            identityKeysInCsv.add(makeIdentityKey(first, last, addr));
-          }
-        }
+        const ownerIdentityKeys = new Set<string>();
+        const propertyIdentityKeys = new Set<string>();
 
-        // 2. Batch query Postgres for existing contacts (for 'inPostgres' flag)
-        const existingIdentityKeys = new Set<string>();
-        const csvIdentities = Array.from(identityKeysInCsv);
-        const BATCH_SIZE = 500;
+        const updatedPropertyMap = new Map();
+        const updatedOwnerMap = new Map();
 
-        for (let i = 0; i < csvIdentities.length; i += BATCH_SIZE) {
-          const batch = csvIdentities.slice(i, i + BATCH_SIZE);
-          const orConditions = batch.map((key) => {
-            const [f, l, a] = key.split("|");
-            return {
-              first_name: { equals: f, mode: "insensitive" as const },
-              last_name: { equals: l, mode: "insensitive" as const },
-              mailing_address: { equals: a, mode: "insensitive" as const },
-            };
-          });
-
-          const found = await prisma.contacts.findMany({
-            where: { OR: orConditions },
-            select: { first_name: true, last_name: true, mailing_address: true },
-          });
-
-          found.forEach((c) => {
-            if (c.first_name && c.last_name && c.mailing_address) {
-              existingIdentityKeys.add(makeIdentityKey(c.first_name, c.last_name, c.mailing_address));
-            }
-          });
-        }
-
-        // 3. Batch query MongoDB for existing records (to get prevList)
-        // We fetch only the fields we need to determine transition state
-        const mongoExisting = await ScrappedData.find(
-          { identityKey: { $in: Array.from(identityKeysInCsv) } },
-          { identityKey: 1, currList: 1 }
-        ).lean();
-
-        // Create a lookup map for O(1) access
-        const listMap = new Map(mongoExisting.map((d: any) => [d.identityKey, d.currList || []]));
-
-        const bulkOps: any[] = [];
+        const ownerIdentityKeyToPropertyMap = new Map<string, any[]>();
 
         for (const row of rows) {
-          const first = String(row[fnIdx] ?? "").trim();
-          const last = String(row[lnIdx] ?? "").trim();
-          const addr = String(row[addrIdx] ?? "").trim();
+          // propertyIdentityKey
           const propAddr = propAddrIdx !== -1 ? String(row[propAddrIdx] ?? "").trim() : "";
-          const mailingCity = mailingCityIdx !== -1 ? String(row[mailingCityIdx] ?? "").trim() : "";
-          const mailingState = mailingStateIdx !== -1 ? String(row[mailingStateIdx] ?? "").trim() : "";
-          const mailingZip = mailingZipIdx !== -1 ? String(row[mailingZipIdx] ?? "").trim() : "";
           const propertyCity = propertyCityIdx !== -1 ? String(row[propertyCityIdx] ?? "").trim() : "";
           const propertyState = propertyStateIdx !== -1 ? String(row[propertyStateIdx] ?? "").trim() : "";
           const propertyZip = propertyZipIdx !== -1 ? String(row[propertyZipIdx] ?? "").trim() : "";
+          const propertyIdentityKey = makeIdentityKey(propAddr, propertyCity, propertyState, propertyZip);
+          propertyIdentityKeys.add(propertyIdentityKey);
 
-          // Skip only if ALL THREE identity fields are missing (at least 1 is required)
-          if (!first && !last && !addr) continue;
+          //owner IdentityKey
+          const first = String(row[fnIdx] ?? "").trim();
+          const last = String(row[lnIdx] ?? "").trim();
+          const addr = String(row[addrIdx] ?? "").trim();
+          const ownerIdentityKey = makeIdentityKey(first, last, addr);
+          ownerIdentityKeys.add(ownerIdentityKey);
 
-          const identityKey = makeIdentityKey(first, last, addr);
+          const propertyIdentityKeyList = ownerIdentityKeyToPropertyMap.get(ownerIdentityKey) ?? [];
+          propertyIdentityKeyList.push(propertyIdentityKey);
+          ownerIdentityKeyToPropertyMap.set(ownerIdentityKey, propertyIdentityKeyList);
+        }
+
+        const existingProperties = await PropertyData.find({
+          identityKey: { $in: [...propertyIdentityKeys] },
+        }).lean();
+
+        const existingPropertyMap = new Map(existingProperties.map((doc) => [doc.identityKey, doc]));
+
+        const existingOwner = await Owner.find({
+          identityKey: { $in: [...ownerIdentityKeys] },
+        }).lean();
+
+        const existingOwnerMap = new Map(existingOwner.map((doc) => [doc.identityKey, doc]));
+
+        for (const row of rows) {
+          // property related data
+          const propAddr = propAddrIdx !== -1 ? String(row[propAddrIdx] ?? "").trim() : "";
+          const propertyCity = propertyCityIdx !== -1 ? String(row[propertyCityIdx] ?? "").trim() : "";
+          const propertyState = propertyStateIdx !== -1 ? String(row[propertyStateIdx] ?? "").trim() : "";
+          const propertyZip = propertyZipIdx !== -1 ? String(row[propertyZipIdx] ?? "").trim() : "";
+          const propertyIdentityKey = makeIdentityKey(propAddr, propertyCity, propertyState, propertyZip);
+
+          //owner related data
+          const first = String(row[fnIdx] ?? "").trim();
+          const last = String(row[lnIdx] ?? "").trim();
+          const addr = String(row[addrIdx] ?? "").trim();
+          const ownerIdentityKey = makeIdentityKey(first, last, addr);
+
+          const mailingCity = mailingCityIdx !== -1 ? String(row[mailingCityIdx] ?? "").trim() : "";
+          const mailingState = mailingStateIdx !== -1 ? String(row[mailingStateIdx] ?? "").trim() : "";
+          const mailingZip = mailingZipIdx !== -1 ? String(row[mailingZipIdx] ?? "").trim() : "";
 
           // --- Calculate 'clean' ---
-          let isClean = true;
+          let isPropertyClean = true;
+          let isOwnerClean = true;
           if (
             !first ||
             !last ||
             !addr ||
-            (propertyAddressCol && !propAddr) ||
             (mailingCityCol && !mailingCity) ||
             (mailingStateCol && !mailingState) ||
-            (mailingZipCol && !mailingZip) ||
-            (propertyCityCol && !propertyCity) ||
-            (propertyStateCol && !propertyState) ||
-            (propertyZipCol && !propertyZip)
+            (mailingZipCol && !mailingZip)
           ) {
-            isClean = false;
+            isOwnerClean = false;
           } else {
             const ownerCompleteName = first + last;
             const llcRegex = /\bllc\b/i;
             if (llcRegex.test(ownerCompleteName)) {
-              isClean = false;
+              isOwnerClean = false;
             }
           }
 
-          // --- Calculate 'inPostgres' ---
-          const inPostgres = existingIdentityKeys.has(identityKey);
+          if (
+            !propAddr ||
+            (propertyCityCol && !propertyCity) ||
+            (propertyStateCol && !propertyState) ||
+            (propertyZipCol && !propertyZip)
+          ) {
+            isPropertyClean = false;
+          }
 
-          // --- Calculate Lists (Transition Logic) ---
-          const prevList = listMap.get(identityKey) || [];
-          let currList: string[] = [];
-          let isListChanged = false;
-
-          const docData: Record<string, any> = {
-            identityKey,
+          let propertyData: Record<string, any> = { prevList: [], currList: [], clean: isPropertyClean };
+          let ownerData: Record<string, any> = {
+            propertyIds: [],
+            clean: isOwnerClean,
+            inPostgres: existingOwnerMap.get(ownerIdentityKey) ?? false,
             jobId: job.jobId,
             botId: job.startedByBotId,
-            syncedAt: new Date(),
-            clean: isClean,
-            inPostgres: inPostgres,
-            prevList: prevList,
-            // currList will be set below
           };
 
-          let property_data: Record<string, any> = {};
-          
           cols.forEach((col, idx) => {
             const value = row[idx];
 
@@ -282,77 +321,218 @@ export const syncScrappedDataOptimized = async () => {
               .replace(/^_|_$/g, "");
 
             if (normalizedCol === "list" || normalizedCol === "lists") {
-              currList =
+              const listNames =
                 value === null || value === undefined || String(value).trim() === ""
                   ? []
                   : String(value)
                       .split(",")
-                      .map((item: string) => item.trim());
+                      .map((s: string) => s.trim())
+                      .filter((s: string) => s.length > 0);
+
+              propertyData.currList = listNames.map((name: string) => ({
+                name: name,
+                list_updated_at: new Date(),
+              }));
             }
 
             if (normalizedCol in mongoToPropertyDetailsMap) {
-              property_data[mongoToPropertyDetailsMap[normalizedCol]] = value;
+              propertyData[mongoToPropertyDetailsMap[normalizedCol]] = value;
             } else {
-              let colKey = col
-                .trim()
-                .replace(/^"|"$/g, "")
-                .toLowerCase()
-                .replace(/[\s\/\-\.]+/g, "_")
-                .replace(/[^a-z0-9_]/g, "")
-                .replace(/_+/g, "_")
-                .replace(/^_|_$/g, "");
-              docData[colKey] = value;
+              ownerData[normalizedCol] = value;
             }
           });
 
-          docData["currList"] = currList;
-
-          // Calculate isListChanged based on prevList (from DB) and currList (from CSV)
-          if (prevList.length !== currList.length) {
-            isListChanged = true;
-          } else {
-            const prevSet = new Set(prevList);
-            const currSet = new Set(currList);
-            const areSame =
-              prevList.every((item: string) => currSet.has(item)) &&
-              currList.every((item: string) => prevSet.has(item));
-            isListChanged = !areSame;
+          if (existingPropertyMap.has(propertyIdentityKey)) {
+            propertyData.prevList = existingPropertyMap.get(propertyIdentityKey)?.currList;
           }
-          docData["isListChanged"] = isListChanged;
 
-          // CRITICAL FIX: Update the in-memory map so that if this same identityKey
-          // appears in a subsequent job in this same loop, it sees the NEW list as "prevList".
-          listMap.set(identityKey, currList);
+          propertyData.isListChanged = false;
+          const prevNames = new Set(
+            propertyData.prevList.map((item: any) => (typeof item === "string" ? item : item.name))
+          );
+          const currNames = new Set(propertyData.currList.map((item: any) => item.name));
 
-          // Construct the update operation
-          // We want to $set the main fields and $push the new property_data
-          // However, if we use $set for everything, we overwrite property_datas.
-          // To append property_datas, we use $push.
-          
-          // We remove property_datas from docData because we will $push it separately
-          // But wait, if the document is new (upsert), we need to create the array.
-          // $push works on upsert too (it creates the array).
-          
-          bulkOps.push({
+          if (prevNames.size !== currNames.size) {
+            propertyData.isListChanged = true;
+          } else {
+            for (const name of prevNames) {
+              if (!currNames.has(name)) {
+                propertyData.isListChanged = true;
+                break;
+              }
+            }
+          }
+
+          updatedPropertyMap.set(propertyIdentityKey, propertyData);
+          // updatedOwnerMap.set(ownerIdentityKey, ownerData);
+          updatedOwnerMap.set(ownerIdentityKey, {
+            ...ownerData,
+            inPostgres: ownerData.inPostgres,
+            clean: ownerData.clean,
+            treasurer_code: ownerData.treasurer_code,
+            delinquent_contract: ownerData.delinquent_contract,
+          });
+        }
+
+        const bulkOps = Array.from(updatedPropertyMap.entries()).map(([identityKey, data]) => ({
+          updateOne: {
+            filter: { identityKey },
+            update: {
+              $set: {
+                ...data,
+                updatedAt: new Date(),
+              },
+              $setOnInsert: {
+                identityKey,
+                createdAt: new Date(),
+              },
+            },
+            upsert: true,
+          },
+        }));
+
+        let result = {} as any;
+        if (bulkOps.length > 0) {
+          result = await PropertyData.bulkWrite(bulkOps, {
+            ordered: false, // continues even if one op fails
+          });
+
+          console.log("Bulk upsert result:", {
+            inserted: result.upsertedCount,
+            modified: result.modifiedCount,
+            matched: result.matchedCount,
+          });
+        }
+        const extractedPropertyIdentityKeys = Array.from(updatedPropertyMap.keys());
+
+        const properties = await PropertyData.find(
+          { identityKey: { $in: extractedPropertyIdentityKeys } },
+          { _id: 1, identityKey: 1 }
+        ).lean();
+
+        // Create a map of identityKey -> _id
+        // Ensure we handle potential duplicate identityKeys in the DB by taking the last one (or handle as needed)
+        const insertedMap: Record<string, any> = {};
+        properties.forEach((p) => {
+          insertedMap[p.identityKey] = p._id;
+        });
+
+        console.log(`Resolved ${Object.keys(insertedMap).length} property IDs.`);
+        console.log("before", ownerIdentityKeyToPropertyMap);
+
+        for (const [key, values] of ownerIdentityKeyToPropertyMap) {
+          const validPropertyIds = values.map((value) => insertedMap[value]).filter((id) => id); // Remove undefined/null values
+
+          ownerIdentityKeyToPropertyMap.set(key, validPropertyIds);
+
+          if (ownerIdentityKeyToPropertyMap.get(key)?.length === 0 && values.length > 0) {
+            console.warn(`⚠️ Owner ${key} has ${values.length} property keys but 0 resolved IDs.`);
+          }
+        }
+
+        const identityKeys = Array.from(updatedOwnerMap.keys());
+        const existingOwners = await Owner.find({ identityKey: { $in: identityKeys } }, { identityKey: 1 }).lean();
+        console.log("existingOwners", existingOwners);
+        const existingKeySet = new Set(existingOwners.map((o) => o.identityKey));
+
+        const updateOps = [];
+
+        const toMongooseObjectIds = (ids: any[]) =>
+          ids.filter(Boolean).map((id) => {
+            if (id instanceof mongoose.Types.ObjectId) {
+              return id; // already correct
+            }
+            return new mongoose.Types.ObjectId(id);
+          });
+
+        for (const [identityKey, data] of updatedOwnerMap.entries()) {
+          if (!existingKeySet.has(identityKey)) continue;
+
+          const rawPropertyIds = ownerIdentityKeyToPropertyMap.get(identityKey) ?? [];
+          const propertyIds = toMongooseObjectIds(rawPropertyIds);
+
+          const softSafeData = { ...data };
+          delete softSafeData._id;
+          delete softSafeData.identityKey;
+          delete softSafeData.propertyIds;
+          delete softSafeData.createdAt;
+          delete softSafeData.updatedAt;
+          delete softSafeData.__v;
+
+          const safeData = {
+            ...softSafeData, // ← convenience
+            inPostgres: Boolean(data.inPostgres),
+            clean: Boolean(data.clean),
+            treasurer_code: data.treasurer_code ?? null,
+            delinquent_contract: data.delinquent_contract ?? null,
+          };
+
+          const update: any = {
+            $set: {
+              ...safeData,
+              updatedAt: new Date(),
+            },
+          };
+
+          if (propertyIds.length > 0) {
+            update.$addToSet = {
+              propertyIds: { $each: propertyIds },
+            };
+          }
+
+          updateOps.push({
             updateOne: {
               filter: { identityKey },
-              update: {
-                $set: docData,
-                $addToSet: { property_datas: property_data }
-              },
-              upsert: true,
+              update,
             },
           });
         }
 
-        if (bulkOps.length > 0) {
-          console.log(`Bulk writing ${bulkOps.length} records for job ${job.jobId}...`);
-          await ScrappedData.bulkWrite(bulkOps);
-          console.log(`Synced ${bulkOps.length} records for job ${job.jobId}`);
-        } else {
-            console.log(`No records to sync for job ${job.jobId}`);
+        const newOwners = [];
+
+        for (const [identityKey, data] of updatedOwnerMap.entries()) {
+          if (existingKeySet.has(identityKey)) continue;
+          const propertyIds = ownerIdentityKeyToPropertyMap.get(identityKey) ?? [];
+          newOwners.push({
+            identityKey,
+            ...data,
+            propertyIds, // 👈 direct assignment (no operators)
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
         }
 
+        if (updateOps.length > 0) {
+          const res = await Owner.bulkWrite(updateOps, { ordered: false });
+
+          res.mongoose?.results?.forEach((result: any, index: number) => {
+            if (!result) return;
+
+            console.error(`\n❌ Error in updateOps[${index}]`);
+
+            console.error("name:", result.name);
+            console.error("message:", result.message);
+
+            if (result.path) {
+              console.error("path:", result.path);
+            }
+
+            if (result.value !== undefined) {
+              console.error("value:", result.value);
+            }
+
+            if (result.reason) {
+              console.error("reason:", result.reason?.message);
+            }
+          });
+        }
+
+        if (newOwners.length > 0) {
+          console.log("newOwners", newOwners);
+          await Owner.insertMany(newOwners, { ordered: false });
+        }
+
+        console.log(`Synced identities for job ${job.jobId}`);
       } catch (err) {
         console.error(`Error processing file ${fileName}:`, err);
       }
