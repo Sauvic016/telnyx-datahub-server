@@ -32,8 +32,13 @@ export const getLatestJobsPerBot = async (): Promise<BotJobs[]> => {
   return jobs.sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime());
 };
 
-export function makeIdentityKey(first: string, last: string, addr: string): string {
-  return `${first.trim().toLowerCase()}|${last.trim().toLowerCase()}|${addr.trim().toLowerCase()}`;
+export function makeIdentityKey(first: string, second: string, third: string, fourth?: string): string {
+  if (fourth) {
+    return `${first.trim().toLowerCase()}|${second.trim().toLowerCase()}|${third.trim().toLowerCase()}|${fourth
+      .trim()
+      .toLowerCase()}`;
+  }
+  return `${first.trim().toLowerCase()}|${second.trim().toLowerCase()}|${third.trim().toLowerCase()}`;
 }
 
 export const getAllJobs = async (): Promise<BotJobs[]> => {

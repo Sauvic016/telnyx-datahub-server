@@ -2,25 +2,46 @@ import prisma from "../db";
 import { Prisma } from "../generated/prisma/client";
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
+import { makeIdentityKey } from "../utils/helper";
 
-export const getCompletedData = async (filters?: { listName?: string }) => {
+export const getCompletedData = async (filters?: { listName?: string; skip: number; take: number }) => {
   // 1. Fetch all approved pipeline items
-  const completedData = await prisma.pipeline.findMany({
-    where: {
-      decision: "APPROVED",
-    },
-    select: {
-      propertyId: true,
-      ownerId: true,
-      stage: true,
-    },
-  });
 
-  const stageMap = new Map<string, string>();
+  const [completedData, total] = await prisma.$transaction([
+    prisma.pipeline.findMany({
+      where: { decision: "APPROVED", stage: "NUMBERLOOKUP_COMPLETED" },
+      orderBy: { createdAt: "desc" },
+      skip: filters?.skip,
+      take: filters?.take,
+      select: {
+        propertyId: true,
+        ownerId: true,
+        stage: true,
+      },
+    }),
+    prisma.pipeline.count({
+      where: { decision: "APPROVED", stage: "NUMBERLOOKUP_COMPLETED" },
+    }),
+  ]);
+  // const completedData = await prisma.pipeline.findMany({
+  //   where: {
+  //     decision: "APPROVED",
+  //   },
+  //   skip: filters?.skip,
+  //   take: filters?.take,
+  //   select: {
+  //     propertyId: true,
+  //     ownerId: true,
+  //     stage: true,
+  //   },
+  // });
+  console.log(completedData.length);
 
-  completedData.forEach(({ ownerId, propertyId, stage }) => {
-    stageMap.set(`${ownerId}|${propertyId}`, stage);
-  });
+  // const stageMap = new Map<string, string>();
+
+  // completedData.forEach(({ ownerId, propertyId, stage }) => {
+  //   stageMap.set(`${ownerId}|${propertyId}`, stage);
+  // });
 
   const ownerPropertyMap = new Map<string, Set<string>>();
 
@@ -30,104 +51,94 @@ export const getCompletedData = async (filters?: { listName?: string }) => {
     }
     ownerPropertyMap.get(ownerId)!.add(propertyId);
   }
-  const owners = await Owner.find({
-    _id: { $in: [...ownerPropertyMap.keys()] },
-  }).populate("propertyIds");
 
-  const result = owners.flatMap((owner) => {
-    const allowedPropertyIds = ownerPropertyMap.get(owner._id.toString());
-
-    if (!allowedPropertyIds) return [];
-
-    return owner.propertyIds
-      .filter((p: any) => allowedPropertyIds.has(p._id.toString()))
-      .map((p: any) => {
-        const stage = stageMap.get(`${owner._id.toString()}|${p._id.toString()}`) ?? "UNKNOWN";
-
-        return {
-          ...owner.toObject(),
-          _id: owner._id,
-          property: p,
-          stage, // ✅ ATTACHED HERE
-        };
-      });
+  const ownerIds = [...new Set(completedData.map((k) => k.ownerId))];
+  const propertyIds = [...new Set(completedData.map((k) => k.propertyId))];
+  const ownersDetails = await Owner.find({
+    _id: { $in: ownerIds },
   });
 
-  const validResult = result.filter(
-    (item) =>
-      item.owner_first_name &&
-      item.owner_last_name &&
-      item.mailing_address &&
-      item.property?.property_address &&
-      item.property?.property_city &&
-      item.property?.property_state &&
-      item.property?.property_zip_code
-  );
+  const propertiesDetails = await PropertyData.find({
+    _id: { $in: propertyIds },
+  });
+
+  const ownerIdToIdentityKeyMap = new Map(ownersDetails.map((o) => [o._id.toString(), o.identityKey]));
+  const propertyIdToIdentityKeyMap = new Map(propertiesDetails.map((p) => [p._id.toString(), p.identityKey]));
+
+  const ownerIdentityToPropertyIdentityMap = new Map<string, Set<string>>();
+
+  for (const { ownerId, propertyId } of completedData) {
+    const ownerIdentityKey = ownerIdToIdentityKeyMap.get(ownerId);
+    const propertyIdentityKey = propertyIdToIdentityKeyMap.get(propertyId);
+
+    if (!ownerIdentityKey || !propertyIdentityKey) continue;
+
+    let propertySet = ownerIdentityToPropertyIdentityMap.get(ownerIdentityKey);
+
+    if (!propertySet) {
+      propertySet = new Set<string>();
+      ownerIdentityToPropertyIdentityMap.set(ownerIdentityKey, propertySet);
+    }
+
+    propertySet.add(propertyIdentityKey);
+  }
+
+  const ownerIdentityKeys = ownersDetails.map((item) => item.identityKey);
+
+  const contactDetails = ownerIdentityKeys.map((identityKey) => {
+    const [firstName, lastName, mailingAddress] = identityKey.split("|");
+    return {
+      firstName,
+      lastName,
+      mailingAddress,
+    };
+  });
+
+  // const owners = await Owner.find({
+  //   _id: { $in: [...ownerPropertyMap.keys()] },
+  // }).populate("propertyIds");
+
+  // const result = owners.flatMap((owner) => {
+  //   const allowedPropertyIds = ownerPropertyMap.get(owner._id.toString());
+
+  //   if (!allowedPropertyIds) return [];
+
+  //   return owner.propertyIds
+  //     .filter((p: any) => allowedPropertyIds.has(p._id.toString()))
+  //     .map((p: any) => {
+  //       // const stage = stageMap.get(`${owner._id.toString()}|${p._id.toString()}`) ?? "UNKNOWN";
+
+  //       return {
+  //         ...owner.toObject(),
+  //         _id: owner._id,
+  //         property: p,
+  //         // stage, // ✅ ATTACHED HERE
+  //       };
+  //     });
+  // });
+
+  // const validResult = result.filter(
+  //   (item) =>
+  //     item.owner_first_name &&
+  //     item.owner_last_name &&
+  //     item.mailing_address &&
+  //     item.property?.property_address &&
+  //     item.property?.property_city &&
+  //     item.property?.property_state &&
+  //     item.property?.property_zip_code
+  // );
 
   // Build the where clause
   const contactData = await prisma.$transaction(async (tx) => {
-    const whereClause: Prisma.contactsWhereInput = {
-      OR: validResult.map(
-        (item): Prisma.contactsWhereInput => ({
-          AND: [
-            {
-              first_name: {
-                equals: item.owner_first_name!,
-                mode: Prisma.QueryMode.insensitive,
-              },
-            },
-            {
-              last_name: {
-                equals: item.owner_last_name!,
-                mode: Prisma.QueryMode.insensitive,
-              },
-            },
-            {
-              mailing_address: {
-                equals: item.mailing_address!,
-                mode: Prisma.QueryMode.insensitive,
-              },
-            },
-            {
-              property_details: {
-                some: {
-                  property_address: {
-                    equals: item.property.property_address,
-                    mode: Prisma.QueryMode.insensitive,
-                  },
-                  property_city: {
-                    equals: item.property.property_city,
-                    mode: Prisma.QueryMode.insensitive,
-                  },
-                  property_state: {
-                    equals: item.property.property_state,
-                    mode: Prisma.QueryMode.insensitive,
-                  },
-                  property_zip: {
-                    equals: String(item.property.property_zip_code),
-                    mode: Prisma.QueryMode.insensitive,
-                  },
-                  ...(filters?.listName && {
-                    lists: {
-                      some: {
-                        list: {
-                          name: {
-                            equals: filters.listName,
-                            mode: Prisma.QueryMode.insensitive,
-                          },
-                        },
-                      },
-                    },
-                  }),
-                },
-              },
-            },
-          ],
-        })
-      ),
+    const whereClause: any = {
+      OR: contactDetails.map((item) => ({
+        first_name: { equals: item.firstName, mode: "insensitive" },
+        last_name: { equals: item.lastName, mode: "insensitive" },
+        mailing_address: { equals: item.mailingAddress, mode: "insensitive" },
+      })),
     };
 
-    const contactData = await tx.contacts.findMany({
+    return await tx.contacts.findMany({
       where: whereClause,
       include: {
         directskips: true,
@@ -164,72 +175,45 @@ export const getCompletedData = async (filters?: { listName?: string }) => {
         },
       },
     });
-
-    return contactData;
   });
+  const contactDataList: any[] = [];
+  for (const contact of contactData) {
+    const IdentityKey = makeIdentityKey(
+      contact.first_name || "",
+      contact.last_name || "",
+      contact.mailing_address || ""
+    );
+    for (const property of contact.property_details || []) {
+      const propertyIdentityKey = makeIdentityKey(
+        property.property_address || "",
+        property.property_city || "",
+        property.property_state || "",
+        property.property_zip || ""
+      );
+      if (ownerIdentityToPropertyIdentityMap.get(IdentityKey)?.has(propertyIdentityKey)) {
+        if (filters?.listName) {
+          const properytListNameSet = new Set(property.lists.map((list) => list.list.name.toLowerCase()));
 
-  const expanded = contactData.flatMap((contact) => {
-    let matches = validResult.filter((r) => contact.property_details.some((pd) => isSameProperty(r.property, pd)));
-
-    if (filters?.listName) {
-      matches = matches.filter((m) => {
-        const pd = contact.property_details.find((d) => isSameProperty(m.property, d));
-        return pd?.lists.some((l) => l.list.name === filters.listName);
-      });
+          if (properytListNameSet.has(filters?.listName.toLowerCase())) {
+            contactDataList.push({
+              ...contact,
+              property_details: property,
+            });
+          }
+        } else {
+          contactDataList.push({
+            ...contact,
+            property_details: property,
+          });
+        }
+      }
     }
+  }
 
-    return matches.map((m) => formatContactData(contact, m.stage, m.property));
-  });
-  return expanded;
-  // const formatedData = contactData.map((contact) => formatContactData(contact, "NUMBERLOOKUP_COMPLETED"));
-  // return
+  return { contactDataList: contactDataList.map((contact) => formatContactData(contact)), totalItems: total };
 };
 
-// const formatContactData = (contact: any, stage = "UNKNOWN") => {
-//   const relatives = [
-//     ...contact.relationsFrom.map((rel: any) => ({
-//       first_name: rel.toContact.first_name,
-//       last_name: rel.toContact.last_name,
-//       contact_phones: rel.toContact.contact_phones.map((p: any) => ({
-//         ...p,
-//         callerId: p.telynxLookup?.caller_id,
-//         islookedup: !!p.telynxLookup,
-//       })),
-//     })),
-//     ...contact.relationsTo.map((rel: any) => ({
-//       first_name: rel.fromContact.first_name,
-//       last_name: rel.fromContact.last_name,
-//       contact_phones: rel.fromContact.contact_phones.map((p: any) => ({
-//         ...p,
-//         callerId: p.telynxLookup?.caller_id,
-//         islookedup: !!p.telynxLookup,
-//       })),
-//     })),
-//   ];
-
-//   return {
-//     id: contact.id,
-//     first_name: contact.first_name,
-//     last_name: contact.last_name,
-//     mailing_address: contact.mailing_address,
-//     mailing_city: contact.mailing_city,
-//     mailing_state: contact.mailing_state,
-//     mailing_zip: contact.mailing_zip,
-//     deceased: contact.deceased,
-//     age: contact.age,
-//     stage, // ✅ clean
-//     confirmedAddress: contact.directskips?.confirmedAddress,
-//     contact_phones: contact.contact_phones.map((phone: any) => ({
-//       ...phone,
-//       callerId: phone.telynxLookup?.caller_id,
-//       islookedup: !!phone.telynxLookup,
-//     })),
-//     property_details: contact.property_details,
-//     relatives,
-//   };
-// };
-
-const formatContactData = (contact: any, stage = "UNKNOWN", matchedProperty?: any) => {
+const formatContactData = (contact: any, matchedProperty?: any) => {
   const relatives = [
     ...contact.relationsFrom.map((rel: any) => ({
       first_name: rel.toContact.first_name,
@@ -251,9 +235,9 @@ const formatContactData = (contact: any, stage = "UNKNOWN", matchedProperty?: an
     })),
   ];
 
-  const filteredPropertyDetails = matchedProperty
-    ? contact.property_details.filter((pd: any) => isSameProperty(matchedProperty, pd))
-    : contact.property_details;
+  // const filteredPropertyDetails = matchedProperty
+  //   ? contact.property_details.filter((pd: any) => isSameProperty(matchedProperty, pd))
+  //   : contact.property_details;
 
   return {
     id: contact.id,
@@ -265,7 +249,6 @@ const formatContactData = (contact: any, stage = "UNKNOWN", matchedProperty?: an
     mailing_zip: contact.mailing_zip,
     deceased: contact.deceased,
     age: contact.age,
-    stage,
 
     confirmedAddress: contact.directskips?.confirmedAddress,
 
@@ -276,8 +259,7 @@ const formatContactData = (contact: any, stage = "UNKNOWN", matchedProperty?: an
     })),
 
     // ✅ ONLY the matched property
-    property_details: filteredPropertyDetails[0],
-    all_properties: contact.property_details,
+    property_details: contact.property_details,
 
     relatives,
   };
@@ -323,7 +305,7 @@ export const getCompletedDataForContactId = async (contactId: string) => {
   });
 
   // need to fix this one aswell
-  return formatContactData(contact, "NUMBERLOOKUP_COMPLETED");
+  return formatContactData(contact);
 };
 
 const normalize = (v?: string | number | null) =>

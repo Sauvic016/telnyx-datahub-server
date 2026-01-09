@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
 import pl from "nodejs-polars";
-import { getLatestJobsPerBot, getAllJobs } from "../utils/helper";
+import { getLatestJobsPerBot, getAllJobs, makeIdentityKey } from "../utils/helper";
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
@@ -133,15 +133,6 @@ function pickColumn(columns: string[], candidates: string[]): string | null {
     if (idx !== -1) return columns[idx];
   }
   return null;
-}
-
-function makeIdentityKey(first: string, second: string, third: string, fourth?: string): string {
-  if (fourth) {
-    return `${first.trim().toLowerCase()}|${second.trim().toLowerCase()}|${third.trim().toLowerCase()}|${fourth
-      .trim()
-      .toLowerCase()}`;
-  }
-  return `${first.trim().toLowerCase()}|${second.trim().toLowerCase()}|${third.trim().toLowerCase()}`;
 }
 
 export const syncScrappedDataOptimized = async () => {

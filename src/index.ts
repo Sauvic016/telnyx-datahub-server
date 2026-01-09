@@ -439,10 +439,7 @@ app.get("/completed-data", async (req, res) => {
     const skip = (page - 1) * limit;
     const listName = req.query.listName as string | undefined;
 
-    const result = (await getCompletedData({ listName })) || [];
-
-    const totalItems = result.length;
-    const paginatedData = result.slice(skip, skip + limit);
+    const { contactDataList, totalItems } = await getCompletedData({ listName, skip, take: limit });
 
     // Fetch all available lists for the frontend dropdown
     const lists = await prisma.list.findMany({
@@ -451,7 +448,7 @@ app.get("/completed-data", async (req, res) => {
     });
 
     res.json({
-      data: paginatedData,
+      data: contactDataList,
       lists,
       page,
       limit,
