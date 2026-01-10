@@ -497,7 +497,7 @@ app.get("/record-detail/:id", async (req, res) => {
 app.get("/mongodbsave", async (req, res) => {
   try {
     console.log("📋 Manual MongoDB sync triggered...");
-    await syncScrappedDataOptimized();
+    await syncScrappedDataOptimized(true);
     res.json({
       status: "ok",
       message: "MongoDB sync completed successfully",

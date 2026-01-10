@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
 import pl from "nodejs-polars";
-import { getLatestJobsPerBot, getAllJobs, makeIdentityKey } from "../utils/helper";
+import { getLatestJobsPerBot, getAllJobs, makeIdentityKey, getAllJobsAfterLastSync } from "../utils/helper";
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
@@ -135,24 +135,15 @@ function pickColumn(columns: string[], candidates: string[]): string | null {
   return null;
 }
 
-export const syncScrappedDataOptimized = async () => {
+export const syncScrappedDataOptimized = async (manual?: boolean) => {
   try {
     console.log("Starting MongoDB sync (Optimized)...");
-
-    // const latestJobs = await getLatestJobsPerBot();
-    const latestJobs = [
-      {
-        jobId: "abc-123",
-        status: "COMPLETED",
-        currentBotId: null,
-        startedByBotId: "4",
-        type: "AUTOMATED",
-        serverIp: "abc",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        resultFilePath: "",
-      },
-    ];
+    let latestJobs;
+    if (manual) {
+      latestJobs = await getAllJobsAfterLastSync();
+    } else {
+      latestJobs = await getLatestJobsPerBot();
+    }
 
     console.log(`Found ${latestJobs.length} jobs to process.`);
 
@@ -362,6 +353,8 @@ export const syncScrappedDataOptimized = async () => {
             clean: ownerData.clean,
             treasurer_code: ownerData.treasurer_code,
             delinquent_contract: ownerData.delinquent_contract,
+            owner_2_first_name: ownerData.owner_2_first_name,
+            owner_2_last_name: ownerData.owner_2_last_name,
           });
         }
 
@@ -456,6 +449,12 @@ export const syncScrappedDataOptimized = async () => {
             clean: Boolean(data.clean),
             treasurer_code: data.treasurer_code ?? null,
             delinquent_contract: data.delinquent_contract ?? null,
+            ...(data.owner_2_first_name !== undefined && {
+              owner_2_first_name: data.owner_2_first_name,
+            }),
+            ...(data.owner_2_last_name !== undefined && {
+              owner_2_last_name: data.owner_2_last_name,
+            }),
           };
 
           const update: any = {

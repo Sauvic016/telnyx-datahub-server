@@ -13,6 +13,9 @@ const OwnerSchema = new mongoose.Schema(
     mailing_state: String,
     mailing_zip_code: String,
 
+    owner_2_first_name: String,
+    owner_2_last_name: String,
+
     inPostgres: Boolean,
 
     bankruptcy: String,

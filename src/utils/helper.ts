@@ -44,6 +44,22 @@ export function makeIdentityKey(first: string, second: string, third: string, fo
 export const getAllJobs = async (): Promise<BotJobs[]> => {
   return prisma.botJobs.findMany({
     orderBy: { updatedAt: "asc" },
+    // 1/8/2026, 7:16:33 PM
+  });
+};
+export const getAllJobsAfterLastSync = async (): Promise<BotJobs[]> => {
+  // 1/8/2026, 7:16:33 PM Amsterdam (UTC+1)
+  const lastSyncedAt = new Date("2026-01-08T18:16:33Z");
+
+  return prisma.botJobs.findMany({
+    where: {
+      updatedAt: {
+        gt: lastSyncedAt, // fetch jobs after last sync
+      },
+    },
+    orderBy: {
+      updatedAt: "asc",
+    },
   });
 };
 
