@@ -9,8 +9,8 @@ export const getCompletedData = async (filters?: { listName?: string; skip: numb
 
   const [completedData, total] = await prisma.$transaction([
     prisma.pipeline.findMany({
-      where: { decision: "APPROVED", stage: "NUMBERLOOKUP_COMPLETED" },
-      orderBy: { createdAt: "desc" },
+      where: { decision: "APPROVED" },
+      orderBy: { updatedAt: "desc" },
       skip: filters?.skip,
       take: filters?.take,
       select: {
@@ -20,7 +20,7 @@ export const getCompletedData = async (filters?: { listName?: string; skip: numb
       },
     }),
     prisma.pipeline.count({
-      where: { decision: "APPROVED", stage: "NUMBERLOOKUP_COMPLETED" },
+      where: { decision: "APPROVED" },
     }),
   ]);
   // const completedData = await prisma.pipeline.findMany({
@@ -252,11 +252,12 @@ const formatContactData = (contact: any, matchedProperty?: any) => {
 
     confirmedAddress: contact.directskips?.confirmedAddress,
 
-    contact_phones: contact.contact_phones.map((phone: any) => ({
-      ...phone,
-      callerId: phone.telynxLookup?.caller_id,
-      islookedup: !!phone.telynxLookup,
-    })),
+    contact_phones:
+      contact.contact_phones?.map((phone: any) => ({
+        ...phone,
+        callerId: phone.telynxLookup?.caller_id,
+        islookedup: !!phone.telynxLookup,
+      })) || [],
 
     // ✅ ONLY the matched property
     property_details: contact.property_details,

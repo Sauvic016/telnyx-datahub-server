@@ -74,6 +74,7 @@ export async function sendApprovedToDirectSkip(totalKeyList: TotalKeyListType[])
         identityKey: ownerDetail.identityKey,
         propertyId: item.propertyId,
         ownerId: item.ownerId,
+        poBoxAddress: isPOBox(ownerDetail.mailing_address) ? ownerDetail.mailing_address : "",
       };
     })
     .filter((row): row is NonNullable<typeof row> => row !== null);

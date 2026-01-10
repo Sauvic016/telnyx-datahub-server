@@ -6,13 +6,14 @@ import crypto from "crypto";
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
 import { makeIdentityKey } from "../utils/helper";
-import { toE164 } from "../utils/phone";
+import { normalizeUSPhoneNumber, toE164 } from "../utils/phone";
 
 interface IWebhookResult {
   identityKey: string;
   response: DirectSkipSearchResponse;
   propertyId: string;
   ownerId: string;
+  poBoxAddress: string;
 }
 
 interface PhoneToValidate {
@@ -32,7 +33,8 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
   await Promise.all(
     results.map(async (result) => {
       try {
-        const { identityKey, response, propertyId, ownerId } = result;
+        const { identityKey, response, propertyId, ownerId, poBoxAddress } = result;
+        console.log(poBoxAddress);
 
         // 1. Update Pipeline to DIRECTSKIP_COMPLETED
         await prisma.pipeline.update({
@@ -59,17 +61,17 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
           },
           { strict: false }
         );
-        if (!response.contacts.length) {
-          console.log(`[SkipTraceProcessing] Processing for ${result} failed.`);
-          return;
-        }
+        // if (!response.contacts.length) {
+        //   console.log(`[SkipTraceProcessing] Processing for ${result} failed.`);
+        //   return;
+        // }
 
         // 2. Save DirectSkip contacts (NO phone validation yet)
-        const contactMap = await saveDirectSkipContacts(response, ownerId);
+        const contactMap = await saveDirectSkipContacts(response, ownerId, poBoxAddress);
 
         // 2.5 Save Property Details and Lists from MongoDB
         if (contactMap.mainContactId) {
-          await savePropertyDetails(contactMap.mainContactId, identityKey, propertyId, ownerId);
+          await savePropertyDetails(contactMap.mainContactId, identityKey, propertyId, ownerId, response);
         }
 
         // 3. Determine which phones to lookup based on deceased status
@@ -198,266 +200,336 @@ interface ContactMap {
   relatives: Map<string, string>; // relative name -> contact ID
 }
 
-const saveDirectSkipContacts = async (response: DirectSkipSearchResponse, ownerId: string): Promise<ContactMap> => {
-  const contacts = response.contacts || [];
+const saveDirectSkipContacts = async (
+  response: DirectSkipSearchResponse,
+  ownerId: string,
+  poBoxAddress: string
+): Promise<ContactMap> => {
   const contactMap: ContactMap = {
     mainContactId: "",
     relatives: new Map(),
   };
-  const OwnerDetails = await Owner.findOne({ _id: ownerId });
 
-  if (contacts.length === 0) return contactMap;
+  const OwnerDetails = await Owner.findOne({ _id: ownerId });
 
   const processedContactIds = new Set<string>();
 
-  for (const contactData of contacts) {
-    try {
-      // Get the primary contact name (first name in the list)
-      const primaryName = contactData.names?.[0];
-      if (!primaryName) continue;
+  // ======================================================
+  // CASE 1: DirectSkip returned contacts (your existing logic)
+  // ======================================================
+  if (response.contacts && response.contacts.length > 0) {
+    const contacts = response.contacts;
 
-      const firstName = (primaryName.firstname || "").toLowerCase();
-      const lastName = (primaryName.lastname || "").toLowerCase();
+    for (const contactData of contacts) {
+      try {
+        const primaryName = contactData.names?.[0];
+        if (!primaryName) continue;
 
-      // Get mailing address from input or confirmed_address
-      const confirmedAddr = contactData.confirmed_address?.[0];
-      const mailingAddress = (OwnerDetails?.mailing_address || confirmedAddr?.street || "").toLowerCase();
-      const mailingCity = (response.input.city || confirmedAddr?.city || "").toLowerCase();
-      const mailingState = (response.input.state || confirmedAddr?.state || "").toLowerCase();
-      const mailingZip = response.input.zip || confirmedAddr?.zip || "";
+        const firstName = (primaryName.firstname || "").toLowerCase();
+        const lastName = (primaryName.lastname || "").toLowerCase();
 
-      if (!firstName && !lastName && !mailingAddress) {
-        console.warn("[SaveContacts] Skipping contact - missing identity fields");
-        continue;
-      }
+        const confirmedAddr = contactData.confirmed_address?.[0];
 
-      // Check if contact exists (case-insensitive)
-      let contact = await prisma.contacts.findFirst({
-        where: {
-          first_name: { equals: firstName, mode: "insensitive" },
-          last_name: { equals: lastName, mode: "insensitive" },
-          mailing_address: { equals: mailingAddress, mode: "insensitive" },
-        },
-      });
+        const mailingAddress = (OwnerDetails?.mailing_address || confirmedAddr?.street || "").toLowerCase();
 
-      // If we haven't processed this contact ID yet in this batch, update/create it.
-      // If we HAVE processed it, we skip updating it to prevent lower-priority results (e.g. deceased records)
-      // from overwriting the main result.
-      const isDuplicateInBatch = contact && processedContactIds.has(contact.id);
+        const mailingCity = (response.input.city || confirmedAddr?.city || "").toLowerCase();
+        const mailingState = (response.input.state || confirmedAddr?.state || "").toLowerCase();
+        const mailingZip = response.input.zip || confirmedAddr?.zip || "";
 
-      if (!isDuplicateInBatch) {
-        if (contact) {
-          // Update existing contact - only update fields if we have values
-          const updateData: any = {};
-          if (primaryName.deceased) updateData.deceased = primaryName.deceased;
-          if (primaryName.age) updateData.age = primaryName.age;
-          if (mailingCity) updateData.mailing_city = mailingCity;
-          if (mailingState) updateData.mailing_state = mailingState;
-          if (mailingZip) updateData.mailing_zip = mailingZip;
-
-          if (Object.keys(updateData).length > 0) {
-            contact = await prisma.contacts.update({
-              where: { id: contact.id },
-              data: updateData,
-            });
-            console.log(
-              `[SaveContacts] Updated existing contact ${contact.id}: ${firstName} ${lastName} with ${JSON.stringify(
-                updateData
-              )}`
-            );
-          } else {
-            console.log(`[SaveContacts] No updates needed for existing contact ${contact.id}`);
-          }
-        } else {
-          // Create new contact
-          contact = await prisma.contacts.create({
-            data: {
-              id: crypto.randomUUID(),
-              first_name: firstName,
-              last_name: lastName,
-              mailing_address: mailingAddress,
-              mailing_city: mailingCity,
-              mailing_state: mailingState,
-              mailing_zip: mailingZip,
-              deceased: primaryName.deceased || "N",
-              age: primaryName.age,
-              user_id: "1",
-            },
-          });
-          console.log(`[SaveContacts] Created new contact ${contact.id}: ${firstName} ${lastName}`);
+        if (!firstName && !lastName && !mailingAddress) {
+          console.warn("[SaveContacts] Skipping contact - missing identity fields");
+          continue;
         }
 
-        // Upsert DirectSkip status
-        await prisma.directSkip.upsert({
-          where: { contactId: contact.id },
-          update: {
-            status: DirectSkipStatus.COMPLETED,
-            skipTracedAt: new Date(),
-            confirmedAddress: confirmedAddr as any,
-          },
-          create: {
-            contactId: contact.id,
-            status: DirectSkipStatus.COMPLETED,
-            skipTracedAt: new Date(),
-            confirmedAddress: confirmedAddr as any,
+        // Check if contact exists (case-insensitive)
+        let contact = await prisma.contacts.findFirst({
+          where: {
+            first_name: { equals: firstName, mode: "insensitive" },
+            last_name: { equals: lastName, mode: "insensitive" },
+            mailing_address: { equals: mailingAddress, mode: "insensitive" },
           },
         });
 
-        processedContactIds.add(contact.id);
-      } else {
-        console.log(`[SaveContacts] Skipping update for duplicate contact ${contact!.id} in batch`);
-      }
+        // If we haven't processed this contact ID yet in this batch, update/create it.
+        // If we HAVE processed it, we skip updating it to prevent lower-priority results (e.g. deceased records)
+        // from overwriting the main result.
+        const isDuplicateInBatch = contact && processedContactIds.has(contact.id);
 
-      // Set mainContactId if it's the first valid contact we encountered
-      if (!contactMap.mainContactId && contact) {
-        contactMap.mainContactId = contact.id;
-      }
+        if (!isDuplicateInBatch) {
+          if (contact) {
+            // Update existing contact - only update fields if we have values
+            const updateData: any = {};
+            if (primaryName.deceased) updateData.deceased = primaryName.deceased;
+            if (primaryName.age) updateData.age = primaryName.age;
+            if (mailingCity) updateData.mailing_city = mailingCity;
+            if (mailingState) updateData.mailing_state = mailingState;
+            if (mailingZip) updateData.mailing_zip = mailingZip;
 
-      // Always process relatives, even if the main contact update was skipped.
-      // This ensures we capture all potential relatives found in the search results.
-      if (contact) {
-        const relatives = contactData.relatives || [];
-        for (const relative of relatives) {
-          try {
-            const relName = relative.name?.split(" ") || [];
-            const relFirstName = (relName[0] || "").toLowerCase();
-            const relLastName = (relName.slice(1).join(" ") || "").toLowerCase();
-            const relPhoneNumbers = relative.phones || [];
-
-            if (!relFirstName && !relLastName) continue;
-
-            // Try to find the relative contact
-            let relativeContact = await prisma.contacts.findFirst({
-              where: {
-                first_name: { equals: relFirstName, mode: "insensitive" },
-                last_name: { equals: relLastName, mode: "insensitive" },
-                mailing_address: { equals: mailingAddress, mode: "insensitive" },
+            if (Object.keys(updateData).length > 0) {
+              contact = await prisma.contacts.update({
+                where: { id: contact.id },
+                data: updateData,
+              });
+              console.log(
+                `[SaveContacts] Updated existing contact ${contact.id}: ${firstName} ${lastName} with ${JSON.stringify(
+                  updateData
+                )}`
+              );
+            } else {
+              console.log(`[SaveContacts] No updates needed for existing contact ${contact.id}`);
+            }
+          } else {
+            // Create new contact
+            contact = await prisma.contacts.create({
+              data: {
+                id: crypto.randomUUID(),
+                first_name: firstName,
+                last_name: lastName,
+                mailing_address: mailingAddress,
+                mailing_city: mailingCity,
+                mailing_state: mailingState,
+                mailing_zip: mailingZip,
+                deceased: primaryName.deceased || "N",
+                age: primaryName.age,
+                user_id: "1",
               },
             });
+            console.log(`[SaveContacts] Created new contact ${contact.id}: ${firstName} ${lastName}`);
+          }
 
-            // If relative doesn't exist, create using primary contact's mailing address
-            if (!relativeContact) {
-              relativeContact = await prisma.contacts.create({
-                data: {
-                  id: crypto.randomUUID(),
-                  first_name: relFirstName,
-                  last_name: relLastName,
-                  age: relative.age,
-                  mailing_address: mailingAddress,
-                  mailing_city: mailingCity,
-                  mailing_state: mailingState,
-                  mailing_zip: mailingZip,
-                  user_id: "1",
+          await prisma.directSkip.upsert({
+            where: { contactId: contact.id },
+            update: {
+              status: DirectSkipStatus.COMPLETED,
+              skipTracedAt: new Date(),
+              confirmedAddress: confirmedAddr as any,
+            },
+            create: {
+              contactId: contact.id,
+              status: DirectSkipStatus.COMPLETED,
+              skipTracedAt: new Date(),
+              confirmedAddress: confirmedAddr as any,
+            },
+          });
+
+          processedContactIds.add(contact.id);
+        } else {
+          console.log(`[SaveContacts] Skipping update for duplicate contact ${contact!.id} in batch`);
+        }
+
+        // Set mainContactId if it's the first valid contact we encountered
+        if (!contactMap.mainContactId && contact) {
+          contactMap.mainContactId = contact.id;
+        }
+
+        // Always process relatives, even if the main contact update was skipped.
+        // This ensures we capture all potential relatives found in the search results.
+        if (contact) {
+          const relatives = contactData.relatives || [];
+
+          for (const relative of relatives) {
+            try {
+              const relName = relative.name?.split(" ") || [];
+              const relFirstName = (relName[0] || "").toLowerCase();
+              const relLastName = (relName.slice(1).join(" ") || "").toLowerCase();
+              const relPhoneNumbers = relative.phones || [];
+
+              if (!relFirstName && !relLastName) continue;
+
+              // Try to find the relative contact
+              let relativeContact = await prisma.contacts.findFirst({
+                where: {
+                  first_name: { equals: relFirstName, mode: "insensitive" },
+                  last_name: { equals: relLastName, mode: "insensitive" },
+                  mailing_address: { equals: mailingAddress, mode: "insensitive" },
                 },
               });
-              await prisma.$transaction(async (tx) => {
-                for (const phone of relPhoneNumbers) {
-                  if (!phone.phonenumber) continue;
-                  const formattedNumber = toE164(phone.phonenumber);
 
-                  const existing = await tx.contact_phones.findFirst({
-                    where: {
-                      contact_id: relativeContact!.id ?? null,
-                      phone_number: formattedNumber,
-                    },
-                  });
-
-                  if (existing) {
-                    await tx.contact_phones.update({
-                      where: { id: existing.id },
-                      data: { phone_type: phone.phonetype },
-                    });
-                  } else {
-                    const phoneId = crypto.randomUUID();
-                    await tx.contact_phones.create({
-                      data: {
-                        id: phoneId,
+              // If relative doesn't exist, create using primary contact's mailing address
+              if (!relativeContact) {
+                relativeContact = await prisma.contacts.create({
+                  data: {
+                    id: crypto.randomUUID(),
+                    first_name: relFirstName,
+                    last_name: relLastName,
+                    age: relative.age,
+                    mailing_address: mailingAddress,
+                    mailing_city: mailingCity,
+                    mailing_state: mailingState,
+                    mailing_zip: mailingZip,
+                    user_id: "1",
+                  },
+                });
+                await prisma.$transaction(async (tx) => {
+                  for (const phone of relPhoneNumbers) {
+                    if (!phone.phonenumber) continue;
+                    const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
+                    const last10 = formattedNumber.slice(-10);
+                    const existing = await tx.contact_phones.findFirst({
+                      where: {
                         contact_id: relativeContact!.id ?? null,
-                        phone_number: formattedNumber,
-                        phone_type: phone.phonetype,
+                        phone_number: {
+                          endsWith: last10, // matches any format ending in same 10 digits
+                        },
                       },
                     });
+
+                    if (existing) {
+                      await tx.contact_phones.update({
+                        where: { id: existing.id },
+                        data: { phone_type: phone.phonetype, phone_number: formattedNumber },
+                      });
+                    } else {
+                      const phoneId = crypto.randomUUID();
+                      await tx.contact_phones.create({
+                        data: {
+                          id: phoneId,
+                          contact_id: relativeContact!.id ?? null,
+                          phone_number: formattedNumber,
+                          phone_type: phone.phonetype,
+                        },
+                      });
+                    }
                   }
-                }
-              });
+                });
 
-              console.log(`[SaveContacts] Created relative ${relativeContact.id}: ${relFirstName} ${relLastName}`);
-            }
+                console.log(`[SaveContacts] Created relative ${relativeContact.id}: ${relFirstName} ${relLastName}`);
+              }
 
-            // Store relative mapping
-            contactMap.relatives.set(relative.name || "", relativeContact.id);
+              // Store relative mapping
+              contactMap.relatives.set(relative.name || "", relativeContact.id);
 
-            // Check if relationship already exists in either direction
-            const existingRelation = await prisma.contactRelation.findFirst({
-              where: {
-                OR: [
-                  { fromContactId: contact.id, toContactId: relativeContact.id },
-                  { fromContactId: relativeContact.id, toContactId: contact.id },
-                ],
-              },
-            });
-
-            if (existingRelation) {
-              // Update existing relation
-              await prisma.contactRelation.update({
+              // Check if relationship already exists in either direction
+              const existingRelation = await prisma.contactRelation.findFirst({
                 where: {
-                  fromContactId_toContactId: {
-                    fromContactId: existingRelation.fromContactId,
-                    toContactId: existingRelation.toContactId,
+                  OR: [
+                    { fromContactId: contact.id, toContactId: relativeContact.id },
+                    { fromContactId: relativeContact.id, toContactId: contact.id },
+                  ],
+                },
+              });
+
+              if (existingRelation) {
+                // Update existing relation
+                await prisma.contactRelation.update({
+                  where: {
+                    fromContactId_toContactId: {
+                      fromContactId: existingRelation.fromContactId,
+                      toContactId: existingRelation.toContactId,
+                    },
                   },
-                },
-                data: {
-                  confirmationCount: { increment: 1 },
-                  confirmedBidirectional: true,
-                  lastConfirmedAt: new Date(),
-                },
-              });
-              console.log(`[SaveContacts] Updated existing relation (confirmed bidirectional)`);
-            } else {
-              // Create new relation
-              await prisma.contactRelation.create({
-                data: {
-                  fromContactId: contact.id,
-                  toContactId: relativeContact.id,
-                  relationType: "relative",
-                  confirmationCount: 1,
-                },
-              });
-              console.log(`[SaveContacts] Created new relation`);
+                  data: {
+                    confirmationCount: { increment: 1 },
+                    confirmedBidirectional: true,
+                    lastConfirmedAt: new Date(),
+                  },
+                });
+                console.log(`[SaveContacts] Updated existing relation (confirmed bidirectional)`);
+              } else {
+                // Create new relation
+                await prisma.contactRelation.create({
+                  data: {
+                    fromContactId: contact.id,
+                    toContactId: relativeContact.id,
+                    relationType: "relative",
+                    confirmationCount: 1,
+                  },
+                });
+                console.log(`[SaveContacts] Created new relation`);
+              }
+            } catch (relErr) {
+              console.error("[SaveContacts] Error processing relative:", relErr);
             }
-          } catch (relErr) {
-            console.error("[SaveContacts] Error processing relative:", relErr);
           }
         }
+      } catch (contactErr) {
+        console.error("[SaveContacts] Error processing contact:", contactErr);
       }
-    } catch (contactErr) {
-      console.error("[SaveContacts] Error processing contact:", contactErr);
     }
+
+    return contactMap;
   }
+
+  // ======================================================
+  // CASE 2: No contacts returned → create from input only
+  // ======================================================
+  const input = response.input;
+  console.log(input);
+
+  if (!input) return contactMap;
+
+  const firstName = (input.firstname || "").toLowerCase();
+  const lastName = (input.lastname || "").toLowerCase();
+
+  const mailingAddress = (poBoxAddress && poBoxAddress.length ? poBoxAddress : input.address || "").toLowerCase();
+  const mailingCity = (input.city || "").toLowerCase();
+  const mailingState = (input.state || "").toLowerCase();
+  const mailingZip = input.zip || "";
+
+  if (!firstName && !lastName && !mailingAddress) return contactMap;
+
+  let contact = await prisma.contacts.findFirst({
+    where: {
+      first_name: { equals: firstName, mode: "insensitive" },
+      last_name: { equals: lastName, mode: "insensitive" },
+      mailing_address: { equals: mailingAddress, mode: "insensitive" },
+    },
+  });
+  console.log("contact in skip trace processing", contact);
+
+  if (!contact) {
+    contact = await prisma.contacts.create({
+      data: {
+        id: crypto.randomUUID(),
+        first_name: firstName,
+        last_name: lastName,
+        mailing_address: mailingAddress,
+        mailing_city: mailingCity,
+        mailing_state: mailingState,
+        mailing_zip: mailingZip,
+        user_id: "1",
+      },
+    });
+  } else {
+    contact = await prisma.contacts.update({
+      where: { id: contact.id },
+      data: {
+        first_name: firstName,
+        last_name: lastName,
+        mailing_address: mailingAddress,
+        mailing_city: mailingCity,
+        mailing_state: mailingState,
+        mailing_zip: mailingZip,
+        user_id: "1",
+      },
+    });
+  }
+
+  await prisma.directSkip.upsert({
+    where: { contactId: contact.id },
+    update: {
+      status: DirectSkipStatus.FAILED,
+      skipTracedAt: new Date(),
+    },
+    create: {
+      contactId: contact.id,
+      status: DirectSkipStatus.FAILED,
+      skipTracedAt: new Date(),
+    },
+  });
+
+  contactMap.mainContactId = contact.id;
 
   return contactMap;
 };
 
-const pickField = (doc: any, candidates: string[]): string => {
-  const normalize = (s: string) => s.trim().toLowerCase().replace(/^"|"$/g, "");
-
-  for (const cand of candidates) {
-    const candNorm = normalize(cand);
-
-    // Check for exact match first
-    if (doc[cand]) return String(doc[cand]);
-
-    // Check for normalized match
-    for (const key of Object.keys(doc)) {
-      if (normalize(key) === candNorm) {
-        return String(doc[key]);
-      }
-    }
-  }
-  return "";
-};
-
-const savePropertyDetails = async (contactId: string, identityKey: string, propertyId: string, ownerId: string) => {
+const savePropertyDetails = async (
+  contactId: string,
+  identityKey: string,
+  propertyId: string,
+  ownerId: string,
+  response: DirectSkipSearchResponse
+) => {
   try {
     // const propertyId = response.propertyId;
     // const propertyAddr = response.input.property_address;
