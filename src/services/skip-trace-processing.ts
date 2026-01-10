@@ -1,4 +1,4 @@
-import { DirectSkipSearchResponse } from "../types/directskip";
+import { DirectSkipSearchResponse, DirectSkipContact, DirectSkipNameRecord } from "../types/directskip";
 import prisma from "../db";
 import { ProcessingStage, DirectSkipStatus } from "../generated/prisma/enums";
 import { validateAndStorePhone } from "./phone-validation-test";
@@ -34,7 +34,6 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
     results.map(async (result) => {
       try {
         const { identityKey, response, propertyId, ownerId, poBoxAddress } = result;
-        console.log(poBoxAddress);
 
         // 1. Update Pipeline to DIRECTSKIP_COMPLETED
         await prisma.pipeline.update({
@@ -68,7 +67,6 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
 
         // 2. Save DirectSkip contacts (NO phone validation yet)
         const contactMap = await saveDirectSkipContacts(response, ownerId, poBoxAddress);
-
         // 2.5 Save Property Details and Lists from MongoDB
         if (contactMap.mainContactId) {
           await savePropertyDetails(contactMap.mainContactId, identityKey, propertyId, ownerId, response);
@@ -219,10 +217,18 @@ const saveDirectSkipContacts = async (
   // ======================================================
   if (response.contacts && response.contacts.length > 0) {
     const contacts = response.contacts;
+    // Resolve main contact deterministically
+    // const resolvedMainContact = resolveMainContact(contacts, response.input);
+    const resolved = resolveMainContactOptimized(response.contacts, response.input);
+
+    const resolvedMainContact = resolved?.contact;
+    const resolvedPrimaryName = resolved?.name;
 
     for (const contactData of contacts) {
       try {
-        const primaryName = contactData.names?.[0];
+        const primaryName =
+          contactData === resolvedMainContact && resolvedPrimaryName ? resolvedPrimaryName : contactData.names?.[0];
+
         if (!primaryName) continue;
 
         const firstName = (primaryName.firstname || "").toLowerCase();
@@ -318,7 +324,10 @@ const saveDirectSkipContacts = async (
         }
 
         // Set mainContactId if it's the first valid contact we encountered
-        if (!contactMap.mainContactId && contact) {
+        // if (!contactMap.mainContactId && contact) {
+        //   contactMap.mainContactId = contact.id;
+        // }
+        if (contact && resolvedMainContact === contactData && !contactMap.mainContactId) {
           contactMap.mainContactId = contact.id;
         }
 
@@ -454,7 +463,6 @@ const saveDirectSkipContacts = async (
   // CASE 2: No contacts returned → create from input only
   // ======================================================
   const input = response.input;
-  console.log(input);
 
   if (!input) return contactMap;
 
@@ -682,3 +690,64 @@ const savePropertyDetails = async (
     console.error(`[SavePropertyDetails] Error processing ${identityKey}:`, err);
   }
 };
+
+const normalize = (v?: string) => v?.toLowerCase().trim() || "";
+
+type ResolvedIdentity = {
+  contact: DirectSkipContact;
+  name: DirectSkipNameRecord;
+  score: number;
+};
+
+export function resolveMainContactOptimized(
+  contacts: DirectSkipContact[],
+  input: { firstname?: string; lastname?: string }
+): ResolvedIdentity | null {
+  if (!contacts || contacts.length === 0) return null;
+
+  const inputFirst = normalize(input.firstname);
+  const inputLast = normalize(input.lastname);
+
+  let bestMatch: ResolvedIdentity | null = null;
+
+  for (const contact of contacts) {
+    for (const name of contact.names || []) {
+      const first = normalize(name.firstname);
+      const last = normalize(name.lastname);
+
+      let score = 0;
+      let resolvedName: DirectSkipNameRecord = { ...name };
+
+      // 1️⃣ Full name match → keep API name
+      if (first === inputFirst && last === inputLast) {
+        score = 100;
+      }
+
+      // 2️⃣ First name match only → override last name with input
+      else if (first === inputFirst) {
+        score = 70;
+        resolvedName.lastname = input.lastname;
+      }
+
+      // 3️⃣ Non-deceased fallback
+      else if (name.deceased === "N") {
+        score = 40;
+      }
+
+      // 4️⃣ Weak fallback
+      else {
+        score = 10;
+      }
+
+      if (!bestMatch || score > bestMatch.score) {
+        bestMatch = {
+          contact,
+          name: resolvedName,
+          score,
+        };
+      }
+    }
+  }
+
+  return bestMatch;
+}
