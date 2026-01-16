@@ -1,23 +1,35 @@
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
+import { resolveDateRange } from "../utils/helper";
 
-interface IRecordFilter {
+export interface IRecordFilter {
   botId?: number;
   listName?: string;
-  isNewDataSection?: boolean;
+  filterDateType?: string;
   startDate?: string;
   endDate?: string;
+  sortBy?: string;
+  sortOrder?: string;
 }
 
 const recordGetter = async (
   page: number,
   limit: number,
+  pageType: "Records" | "Newdata" | "Decision" = "Records",
   recordTab: "all" | "clean" | "incomplete" = "all",
   filter?: IRecordFilter
 ) => {
   const skip = (page - 1) * limit;
 
   const pipeline: any[] = [];
+
+  // Resolve date range from filter
+  let startDate, endDate;
+  if (filter?.filterDateType) {
+    const result = resolveDateRange(filter);
+    startDate = result.startDate;
+    endDate = result.endDate;
+  }
 
   /* --------------------------------------------------
      1️⃣ OWNER-LEVEL FILTERS (ONLY OWNER FIELDS)
@@ -29,7 +41,13 @@ const recordGetter = async (
     ownerMatch.botId = filter.botId;
   }
 
-  pipeline.push({ $match: ownerMatch });
+  if (pageType === "Newdata") {
+    ownerMatch.$or = [{ decision: { $exists: false } }, { decision: { $ne: "APPROVED" } }];
+  }
+
+  if (Object.keys(ownerMatch).length > 0) {
+    pipeline.push({ $match: ownerMatch });
+  }
 
   /* --------------------------------------------------
      2️⃣ ONE ROW PER PROPERTY
@@ -63,14 +81,14 @@ const recordGetter = async (
   });
 
   /* --------------------------------------------------
-     4️⃣ CLEAN / INCOMPLETE LOGIC (✔️ CORRECT PLACE)
+     4️⃣ CLEAN / INCOMPLETE LOGIC
   -------------------------------------------------- */
 
   if (recordTab === "clean") {
     pipeline.push({
       $match: {
-        clean: { $eq: true }, // Owner.clean
-        "property.clean": { $eq: true }, // PropertyData.clean
+        clean: { $eq: true },
+        "property.clean": { $eq: true },
       },
     });
   }
@@ -95,13 +113,36 @@ const recordGetter = async (
     };
   }
 
-  if (filter?.startDate || filter?.endDate) {
-    propertyMatch["property.syncedAt"] = {};
-    if (filter.startDate) {
-      propertyMatch["property.syncedAt"].$gte = new Date(filter.startDate);
-    }
-    if (filter.endDate) {
-      propertyMatch["property.syncedAt"].$lte = new Date(filter.endDate);
+  // Use resolved dates from resolveDateRange function
+  if (startDate || endDate) {
+    propertyMatch["property.updatedAt"] = {};
+
+    // Check if it's a single day (same date, ignoring time)
+    if (startDate && endDate) {
+      const isSameDay =
+        startDate.getUTCFullYear() === endDate.getUTCFullYear() &&
+        startDate.getUTCMonth() === endDate.getUTCMonth() &&
+        startDate.getUTCDate() === endDate.getUTCDate();
+
+      if (isSameDay) {
+        // Match entire day: 00:00:00 to 23:59:59
+        const dayStart = new Date(
+          Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 0, 0, 0, 0)
+        );
+        const dayEnd = new Date(
+          Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 23, 59, 59, 999)
+        );
+        propertyMatch["property.updatedAt"].$gte = dayStart;
+        propertyMatch["property.updatedAt"].$lte = dayEnd;
+      } else {
+        // Different days: use as-is
+        propertyMatch["property.updatedAt"].$gte = startDate;
+        propertyMatch["property.updatedAt"].$lte = endDate;
+      }
+    } else if (startDate) {
+      propertyMatch["property.updatedAt"].$gte = startDate;
+    } else if (endDate) {
+      propertyMatch["property.updatedAt"].$lte = endDate;
     }
   }
 
@@ -113,7 +154,11 @@ const recordGetter = async (
      6️⃣ SORTING
   -------------------------------------------------- */
 
-  if (filter?.isNewDataSection && filter?.listName) {
+  // Convert sortOrder to MongoDB format: 'asc' -> 1, 'desc' -> -1, default to -1
+  const sortOrderValue = filter?.sortOrder === "asc" ? 1 : -1;
+
+  // Special case: Newdata page with listName filter
+  if (pageType === "Newdata" && filter?.listName) {
     pipeline.push({
       $addFields: {
         sortKey: {
@@ -137,16 +182,25 @@ const recordGetter = async (
         },
       },
     });
-    pipeline.push({ $sort: { sortKey: -1 } });
-  } else if (filter?.isNewDataSection) {
-    pipeline.push({
-      $addFields: {
-        sortKey: { $max: "$property.currList.list_updated_at" },
-      },
-    });
-    pipeline.push({ $sort: { sortKey: -1 } });
+    pipeline.push({ $sort: { sortKey: sortOrderValue } });
   } else {
-    pipeline.push({ $sort: { "property.updatedAt": -1 } });
+    // Default sorting: use sortBy field or default to property.updatedAt
+    let sortField = "property.updatedAt"; // default
+
+    if (filter?.sortBy) {
+      if (filter.sortBy === "Date") {
+        sortField = "property.updatedAt";
+      } else if (filter.sortBy === "Name") {
+        sortField = "owner_first_name";
+      } else if (filter.sortBy === "Address") {
+        sortField = "mailing_address";
+      } else {
+        // Use sortBy value as-is for other fields
+        sortField = filter.sortBy;
+      }
+    }
+
+    pipeline.push({ $sort: { [sortField]: sortOrderValue } });
   }
 
   /* --------------------------------------------------

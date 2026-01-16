@@ -1,5 +1,6 @@
 import prisma from "../db";
 import { BotJobs } from "../generated/prisma/client";
+import { IRecordFilter } from "../services/contacts-check";
 import { BOTMAP } from "./constants";
 import fs from "fs/promises";
 
@@ -89,4 +90,82 @@ export function pickField(doc: any, candidates: string[]): string {
     }
   }
   return "";
+}
+
+export function resolveDateRange(filter: IRecordFilter) {
+  const now = new Date();
+  let startDate, endDate;
+  try {
+    switch (filter?.filterDateType) {
+      case "today": {
+        startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+
+        endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+        break;
+      }
+
+      case "yesterday": {
+        startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0));
+
+        endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 23, 59, 59, 999));
+        break;
+      }
+
+      case "last48hours": {
+        startDate = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+        endDate = now;
+        break;
+      }
+
+      case "this_week": {
+        const day = now.getUTCDay() || 7; // Sunday = 7
+        startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day + 1, 0, 0, 0, 0));
+        endDate = now;
+        break;
+      }
+
+      case "last_week": {
+        const day = now.getUTCDay() || 7;
+
+        startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day - 6, 0, 0, 0, 0));
+
+        endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day, 23, 59, 59, 999));
+        break;
+      }
+
+      case "this_month": {
+        startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+        endDate = now;
+        break;
+      }
+
+      case "last_month": {
+        startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1, 0, 0, 0, 0));
+
+        endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 59, 999));
+        break;
+      }
+
+      case "custom": {
+        startDate = new Date(filter.startDate!);
+        endDate = new Date(filter.endDate!);
+
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          throw new Error("Invalid custom date range");
+        }
+
+        if (startDate > endDate) {
+          throw new Error("Start date cannot be after end date");
+        }
+        break;
+      }
+
+      default:
+        throw new Error("Invalid filterDateType");
+    }
+  } catch (error) {
+    console.log(error);
+  }
+
+  return { startDate, endDate };
 }

@@ -23,25 +23,6 @@ export const getCompletedData = async (filters?: { listName?: string; skip: numb
       where: { decision: "APPROVED" },
     }),
   ]);
-  // const completedData = await prisma.pipeline.findMany({
-  //   where: {
-  //     decision: "APPROVED",
-  //   },
-  //   skip: filters?.skip,
-  //   take: filters?.take,
-  //   select: {
-  //     propertyId: true,
-  //     ownerId: true,
-  //     stage: true,
-  //   },
-  // });
-  console.log(completedData.length);
-
-  // const stageMap = new Map<string, string>();
-
-  // completedData.forEach(({ ownerId, propertyId, stage }) => {
-  //   stageMap.set(`${ownerId}|${propertyId}`, stage);
-  // });
 
   const ownerPropertyMap = new Map<string, Set<string>>();
 

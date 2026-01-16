@@ -212,17 +212,18 @@ model job_messages {
 }
 
 model job_targets {
-  id                String              @id @db.VarChar
-  job_id            String              @db.VarChar
-  contact_id        String              @db.VarChar
-  phone_id          String              @db.VarChar
-  property_id       String?             @db.VarChar
-  status            jobtargetstatus?
-  contacts          contacts            @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  jobs              jobs                @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  contact_phones    contact_phones      @relation(fields: [phone_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  property_details  property_details?   @relation(fields: [property_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  outbound_messages outbound_messages[]
+  id                 String              @id @db.VarChar
+  job_id             String              @db.VarChar
+  contact_id         String              @db.VarChar
+  phone_id           String              @db.VarChar
+  property_id        String?             @db.VarChar
+  status             jobtargetstatus?
+  last_sequence_sent Int                 @default(0)
+  contacts           contacts            @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  jobs               jobs                @relation(fields: [job_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact_phones     contact_phones      @relation(fields: [phone_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  property_details   property_details?   @relation(fields: [property_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  outbound_messages  outbound_messages[]
 }
 
 model job_telnyx_association {

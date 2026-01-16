@@ -699,55 +699,112 @@ type ResolvedIdentity = {
   score: number;
 };
 
+// export function resolveMainContactOptimized(
+//   contacts: DirectSkipContact[],
+//   input: { firstname?: string; lastname?: string }
+// ): ResolvedIdentity | null {
+//   if (!contacts || contacts.length === 0) return null;
+
+//   const inputFirst = normalize(input.firstname);
+//   const inputLast = normalize(input.lastname);
+
+//   let bestMatch: ResolvedIdentity | null = null;
+
+//   for (const contact of contacts) {
+//     for (const name of contact.names || []) {
+//       const first = normalize(name.firstname);
+//       const last = normalize(name.lastname);
+
+//       let score = 0;
+//       let resolvedName: DirectSkipNameRecord = { ...name };
+
+//       // 1️⃣ Full name match → keep API name
+//       if (first === inputFirst && last === inputLast) {
+//         score = 100;
+//       }
+
+//       // 2️⃣ First name match only → override last name with input
+//       else if (first === inputFirst) {
+//         score = 70;
+//         resolvedName.lastname = input.lastname;
+//       }
+
+//       // 3️⃣ Non-deceased fallback
+//       else if (name.deceased === "N") {
+//         score = 40;
+//       }
+
+//       // 4️⃣ Weak fallback
+//       else {
+//         score = 10;
+//       }
+
+//       if (!bestMatch || score > bestMatch.score) {
+//         bestMatch = {
+//           contact,
+//           name: resolvedName,
+//           score,
+//         };
+//       }
+//     }
+//   }
+
+//   return bestMatch;
+// }
 export function resolveMainContactOptimized(
   contacts: DirectSkipContact[],
   input: { firstname?: string; lastname?: string }
-): ResolvedIdentity | null {
+): { contact: DirectSkipContact; name: DirectSkipNameRecord } | null {
   if (!contacts || contacts.length === 0) return null;
 
   const inputFirst = normalize(input.firstname);
   const inputLast = normalize(input.lastname);
 
-  let bestMatch: ResolvedIdentity | null = null;
-
+  // 1. Try matching logic first
   for (const contact of contacts) {
     for (const name of contact.names || []) {
       const first = normalize(name.firstname);
       const last = normalize(name.lastname);
 
-      let score = 0;
-      let resolvedName: DirectSkipNameRecord = { ...name };
-
-      // 1️⃣ Full name match → keep API name
+      // ✅ Full name match → keep API name
       if (first === inputFirst && last === inputLast) {
-        score = 100;
-      }
-
-      // 2️⃣ First name match only → override last name with input
-      else if (first === inputFirst) {
-        score = 70;
-        resolvedName.lastname = input.lastname;
-      }
-
-      // 3️⃣ Non-deceased fallback
-      else if (name.deceased === "N") {
-        score = 40;
-      }
-
-      // 4️⃣ Weak fallback
-      else {
-        score = 10;
-      }
-
-      if (!bestMatch || score > bestMatch.score) {
-        bestMatch = {
+        return {
           contact,
-          name: resolvedName,
-          score,
+          name,
+        };
+      }
+
+      // ✅ First name match only → override last name in-place
+      if (first === inputFirst && last !== inputLast) {
+        name.lastname = input.lastname;
+        return {
+          contact,
+          name,
         };
       }
     }
   }
 
-  return bestMatch;
+  // 2. No match found → mutate first contact in-place
+  const firstContact = contacts[0];
+
+  if (!firstContact.names || firstContact.names.length === 0) {
+    firstContact.names = [
+      {
+        firstname: input.firstname,
+        lastname: input.lastname,
+        deceased: undefined,
+      },
+    ];
+  } else {
+    const primaryName = firstContact.names[0];
+    primaryName.firstname = input.firstname;
+    primaryName.lastname = input.lastname;
+    // deceased preserved automatically
+  }
+
+  return {
+    contact: firstContact,
+    name: firstContact.names[0],
+  };
 }

@@ -184,6 +184,11 @@ app.get("/records", async (req, res) => {
     const startedByBotParam = req.query.startedByBot;
 
     const dataType = (req.query.dataType as string as "all" | "clean" | "incomplete") || "all";
+    const filterDateType = req.query.filterDateType;
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const sortBy = req.query.sortBy;
+    const sortOrder = req.query.sortOrder;
 
     // Build list of available bots for frontend dropdown
     const availableBots = Object.entries(BOTMAP).map(([id, config]) => ({
@@ -194,11 +199,16 @@ app.get("/records", async (req, res) => {
 
     const filterObject = Object.fromEntries(
       Object.entries({
+        filterDateType,
+        startDate,
+        endDate,
+        sortOrder,
+        sortBy,
         listName,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
       }).filter(([_, v]) => v !== undefined)
     );
-    const { items, total } = await recordGetter(page, limit, dataType, filterObject);
+    const { items, total } = await recordGetter(page, limit, "Records", dataType, filterObject);
 
     const getLists = await prisma.list.findMany({});
 
@@ -235,6 +245,12 @@ app.get("/new-data-records", async (req, res) => {
     const listName = listNameParam || undefined;
     const startedByBotParam = req.query.startedByBot;
 
+    const filterDateType = req.query.filterDateType;
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const sortBy = req.query.sortBy;
+    const sortOrder = req.query.sortOrder;
+
     const dataType = (req.query.dataType as string as "all" | "clean" | "incomplete") || "all";
 
     // Build list of available bots for frontend dropdown
@@ -246,13 +262,17 @@ app.get("/new-data-records", async (req, res) => {
 
     const filterObject = Object.fromEntries(
       Object.entries({
-        isNewDataSection: true,
+        filterDateType,
+        startDate,
+        endDate,
+        sortOrder,
+        sortBy,
         listName,
         listId,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
       }).filter(([_, v]) => v !== undefined)
     );
-    const { items, total } = await recordGetter(page, limit, dataType, filterObject);
+    const { items, total } = await recordGetter(page, limit, "Newdata", dataType, filterObject);
 
     const getLists = await prisma.list.findMany({});
 
@@ -288,16 +308,26 @@ app.post("/decisions", async (req, res) => {
       const listId = filter?.listId;
       const listName = filter?.listName;
 
+      const filterDateType = req.query.filterDateType;
+      const startDate = req.query.startDate;
+      const endDate = req.query.endDate;
+      const sortBy = req.query.sortBy;
+      const sortOrder = req.query.sortOrder;
+
       const startedByBot = filter?.startedByBot;
       const filterObject = Object.fromEntries(
         Object.entries({
-          isNewDataSection: filter?.isNewDataPage,
+          filterDateType,
+          startDate,
+          endDate,
+          sortOrder,
+          sortBy,
           listName,
           listId,
           botId: startedByBot ? Number(startedByBot) : undefined,
         }).filter(([_, v]) => v !== undefined)
       );
-      const { items, total } = await recordGetter(1, limit, dataType, filterObject);
+      const { items, total } = await recordGetter(1, limit, "Decision", dataType, filterObject);
 
       ownerIdList = items.map((r: any) => r._id.toString());
       totalKeyList = items.map((r: any) => ({
