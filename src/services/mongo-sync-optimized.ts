@@ -313,7 +313,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
 
               propertyData.currList = listNames.map((name: string) => ({
                 name: name,
-                list_updated_at: new Date(),
+                list_updated_at: job.updatedAt,
               }));
             }
 
@@ -330,7 +330,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
 
           propertyData.isListChanged = false;
           const prevNames = new Set(
-            propertyData.prevList.map((item: any) => (typeof item === "string" ? item : item.name))
+            propertyData.prevList.map((item: any) => (typeof item === "string" ? item : item.name)),
           );
           const currNames = new Set(propertyData.currList.map((item: any) => item.name));
 
@@ -364,11 +364,12 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             update: {
               $set: {
                 ...data,
-                updatedAt: new Date(),
+                updatedAt: job.updatedAt,
+                syncedAt: new Date(),
               },
               $setOnInsert: {
                 identityKey,
-                createdAt: new Date(),
+                createdAt: job.createdAt,
               },
             },
             upsert: true,
@@ -391,7 +392,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
 
         const properties = await PropertyData.find(
           { identityKey: { $in: extractedPropertyIdentityKeys } },
-          { _id: 1, identityKey: 1 }
+          { _id: 1, identityKey: 1 },
         ).lean();
 
         // Create a map of identityKey -> _id
@@ -460,7 +461,8 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const update: any = {
             $set: {
               ...safeData,
-              updatedAt: new Date(),
+              updatedAt: job.updatedAt,
+              syncedAt: new Date(),
             },
           };
 
@@ -486,9 +488,10 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           newOwners.push({
             identityKey,
             ...data,
-            propertyIds, // 👈 direct assignment (no operators)
-            createdAt: new Date(),
-            updatedAt: new Date(),
+            propertyIds,
+            createdAt: job.createdAt,
+            updatedAt: job.updatedAt,
+            syncedAt: new Date(),
           });
         }
 

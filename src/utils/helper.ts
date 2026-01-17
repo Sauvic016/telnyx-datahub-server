@@ -22,8 +22,8 @@ export const getLatestJobsPerBot = async (): Promise<BotJobs[]> => {
           updatedAt: g._max.updatedAt!,
         },
         orderBy: { updatedAt: "desc" },
-      })
-    )
+      }),
+    ),
   );
 
   const notNull = (item: BotJobs | null): item is BotJobs => item !== null;
@@ -45,12 +45,10 @@ export function makeIdentityKey(first: string, second: string, third: string, fo
 export const getAllJobs = async (): Promise<BotJobs[]> => {
   return prisma.botJobs.findMany({
     orderBy: { updatedAt: "asc" },
-    // 1/8/2026, 7:16:33 PM
   });
 };
 export const getAllJobsAfterLastSync = async (): Promise<BotJobs[]> => {
-  // 1/8/2026, 7:16:33 PM Amsterdam (UTC+1)
-  const lastSyncedAt = new Date("2026-01-08T18:16:33Z");
+  const lastSyncedAt = new Date("2026-01-07T18:16:33Z");
 
   return prisma.botJobs.findMany({
     where: {
