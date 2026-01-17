@@ -108,9 +108,16 @@ const recordGetter = async (
   const propertyMatch: any = {};
 
   if (filter?.listName) {
-    propertyMatch["property.currList"] = {
-      $elemMatch: { name: filter.listName },
-    };
+    if (filter?.listName === "all-lists") {
+      propertyMatch["property.currList"] = {
+        $exists: true,
+        $not: { $size: 0 },
+      };
+    } else {
+      propertyMatch["property.currList"] = {
+        $elemMatch: { name: filter.listName },
+      };
+    }
   }
 
   // Use resolved dates from resolveDateRange function
