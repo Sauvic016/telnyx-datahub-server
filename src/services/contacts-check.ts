@@ -17,7 +17,7 @@ const recordGetter = async (
   limit: number,
   pageType: "Records" | "Newdata" | "Decision" = "Records",
   recordTab: "all" | "clean" | "incomplete" = "all",
-  filter?: IRecordFilter
+  filter?: IRecordFilter,
 ) => {
   const skip = (page - 1) * limit;
 
@@ -126,26 +126,9 @@ const recordGetter = async (
 
     // Check if it's a single day (same date, ignoring time)
     if (startDate && endDate) {
-      const isSameDay =
-        startDate.getUTCFullYear() === endDate.getUTCFullYear() &&
-        startDate.getUTCMonth() === endDate.getUTCMonth() &&
-        startDate.getUTCDate() === endDate.getUTCDate();
-
-      if (isSameDay) {
-        // Match entire day: 00:00:00 to 23:59:59
-        const dayStart = new Date(
-          Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 0, 0, 0, 0)
-        );
-        const dayEnd = new Date(
-          Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 23, 59, 59, 999)
-        );
-        propertyMatch["property.updatedAt"].$gte = dayStart;
-        propertyMatch["property.updatedAt"].$lte = dayEnd;
-      } else {
-        // Different days: use as-is
-        propertyMatch["property.updatedAt"].$gte = startDate;
-        propertyMatch["property.updatedAt"].$lte = endDate;
-      }
+      // Don't check for same day - use the dates as sent from frontend
+      propertyMatch["property.updatedAt"].$gte = startDate;
+      propertyMatch["property.updatedAt"].$lte = endDate;
     } else if (startDate) {
       propertyMatch["property.updatedAt"].$gte = startDate;
     } else if (endDate) {

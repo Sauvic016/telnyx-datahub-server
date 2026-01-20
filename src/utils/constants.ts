@@ -1,17 +1,18 @@
 export interface BotConfig {
   name: string;
   isStarter: boolean;
-  flow: number[] | null;
+  cooldown: number;
+  flow: number[] | null; // defines which bots follow this one
+  errorCooldown: number;
 }
-
 const hour = 60 * 60 * 1000;
 export const BOTMAP: Record<number, BotConfig> = {
-  1: { name: "Akron Water", isStarter: true, flow: [1, 4] },
-  2: { name: "Summit Foreclosure", isStarter: true, flow: [2, 4] },
-  3: { name: "Summit Notice of Default", isStarter: true, flow: [3, 4] },
-  4: { name: "summitoh_v5", isStarter: false, flow: null },
+  1: { name: "address-bot", isStarter: true, flow: [1, 4], cooldown: 3 * hour, errorCooldown: 48 * hour },
+  2: { name: "ssfweb-parcel-bot", isStarter: true, flow: [2, 4], cooldown: 12 * hour, errorCooldown: 48 * hour },
+  3: { name: "clerkweb-parcel-bot", isStarter: true, flow: [3, 4], cooldown: 12 * hour, errorCooldown: 48 * hour },
+  4: { name: "summitoh_v5", isStarter: false, flow: null, cooldown: 6 * hour, errorCooldown: 48 * hour },
+  5: { name: "summitoh_v5_standalone", isStarter: true, flow: null, cooldown: 6 * hour, errorCooldown: 48 * hour },
 };
-
 export const us_state = [
   "al", "alabama",
   "ak", "alaska",

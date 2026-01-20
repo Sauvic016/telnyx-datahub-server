@@ -11,8 +11,7 @@ import { JobType, RowDecisionStatus, ProcessingStage } from "./generated/prisma/
 
 import recordGetter from "./services/contacts-check";
 import { connectToMongo } from "./mongoose";
-import { makeIdentityKey } from "./utils/helper";
-import { syncScrappedData } from "./services/mongo-sync";
+
 import router from "./routes/bot-jobs";
 import jobSyncRouter from "./routes/job-sync";
 import { processSkipTraceResponse } from "./services/skip-trace-processing";
@@ -22,6 +21,7 @@ import { getCompletedData, getCompletedDataForContactId } from "./services/compl
 import { BOTMAP } from "./utils/constants";
 import { Owner } from "./models/Owner";
 import { syncScrappedDataOptimized } from "./services/mongo-sync-optimized";
+import editDetails from "./services/edit-details";
 
 const app = express();
 
@@ -129,7 +129,7 @@ app.post("/receive", upload.array("files"), async (req, res) => {
             updatedAt: new Date(job.updatedAt),
             resultFilePath,
           },
-        })
+        }),
       );
     }
 
@@ -206,7 +206,7 @@ app.get("/records", async (req, res) => {
         sortBy,
         listName,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
-      }).filter(([_, v]) => v !== undefined)
+      }).filter(([_, v]) => v !== undefined),
     );
     const { items, total } = await recordGetter(page, limit, "Records", dataType, filterObject);
 
@@ -270,7 +270,7 @@ app.get("/new-data-records", async (req, res) => {
         listName,
         listId,
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
-      }).filter(([_, v]) => v !== undefined)
+      }).filter(([_, v]) => v !== undefined),
     );
     const { items, total } = await recordGetter(page, limit, "Newdata", dataType, filterObject);
 
@@ -325,7 +325,7 @@ app.post("/decisions", async (req, res) => {
           listName,
           listId,
           botId: startedByBot ? Number(startedByBot) : undefined,
-        }).filter(([_, v]) => v !== undefined)
+        }).filter(([_, v]) => v !== undefined),
       );
       const { items, total } = await recordGetter(1, limit, "Decision", dataType, filterObject);
 
@@ -375,8 +375,8 @@ app.post("/decisions", async (req, res) => {
               ownerId: key.ownerId,
               propertyId: key.propertyId,
             },
-          })
-        )
+          }),
+        ),
     );
 
     await Owner.updateMany(
@@ -387,7 +387,7 @@ app.post("/decisions", async (req, res) => {
           stage: ProcessingStage.APPROVED,
         },
       },
-      { strict: false }
+      { strict: false },
     );
 
     try {
@@ -410,6 +410,100 @@ app.post("/decisions", async (req, res) => {
   } catch (error) {
     console.error("Error in /decisions:", error);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/edit-details", async (req, res) => {
+  try {
+    const {
+      ownerId,
+      propertyId,
+      type,
+
+      newPropertyAddress,
+      newPropertyCity,
+      newPropertyState,
+      newPropertyZip,
+
+      newMailingAddress,
+      newMailingCity,
+      newMailingState,
+      newMailingZip,
+    } = req.body;
+
+    // 1. Validate required fields
+    if (!ownerId || !propertyId || !type) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "ownerId, propertyId and type are required",
+      });
+    }
+
+    // 2. Validate type value
+    if (!["property", "mailing"].includes(type)) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "Invalid type. Must be 'property' or 'mailing'",
+      });
+    }
+
+    // 3. Prepare update data object
+    const updateData = {
+      newPropertyAddress,
+      newPropertyCity,
+      newPropertyState,
+      newPropertyZip,
+      newMailingAddress,
+      newMailingCity,
+      newMailingState,
+      newMailingZip,
+    };
+
+    // 4. Validate that at least one field is provided based on type
+    if (type === "property") {
+      const hasPropertyField = newPropertyAddress || newPropertyCity || newPropertyState || newPropertyZip;
+      if (!hasPropertyField) {
+        return res.status(400).json({
+          error: "Bad Request",
+          message: "At least one property field must be provided for update",
+        });
+      }
+    } else if (type === "mailing") {
+      const hasMailingField = newMailingAddress || newMailingCity || newMailingState || newMailingZip;
+      if (!hasMailingField) {
+        return res.status(400).json({
+          error: "Bad Request",
+          message: "At least one mailing field must be provided for update",
+        });
+      }
+    }
+
+    // 5. Call service layer
+    console.log(`[/edit-details] Updating ${type} for owner ${ownerId}, property ${propertyId}`);
+    const result = await editDetails(type, ownerId, propertyId, updateData);
+
+    // 6. Handle service response
+    if (!result.success) {
+      return res.status(result.statusCode).json({
+        error: result.error,
+        message: result.error,
+      });
+    }
+
+    // 7. Return success response
+    return res.status(200).json({
+      success: true,
+      summary: result.summary,
+      message: result.message,
+      modifiedFields: result.modifiedFields,
+    });
+  } catch (err) {
+    console.error("[/edit-details] Unexpected error:", err);
+    return res.status(500).json({
+      error: "Internal Server Error",
+      message: "Failed to update details",
+      details: err instanceof Error ? err.message : "Unknown error",
+    });
   }
 });
 
