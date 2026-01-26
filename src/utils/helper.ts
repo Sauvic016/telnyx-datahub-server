@@ -90,7 +90,12 @@ export function pickField(doc: any, candidates: string[]): string {
   return "";
 }
 
-export function resolveDateRange(filter: IRecordFilter) {
+interface IDateFilter {
+  filterDateType?: string;
+  startDate?: string;
+  endDate?: string;
+}
+export function resolveDateRange(filter: IDateFilter) {
   const now = new Date();
   let startDate, endDate;
   try {

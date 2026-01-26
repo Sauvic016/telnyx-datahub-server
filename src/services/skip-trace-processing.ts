@@ -7,6 +7,7 @@ import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
 import { makeIdentityKey } from "../utils/helper";
 import { normalizeUSPhoneNumber, toE164 } from "../utils/phone";
+import { parse, isValid } from "date-fns";
 
 interface IWebhookResult {
   identityKey: string;
@@ -58,7 +59,7 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
                 : ProcessingStage.DIRECTSKIP_FAILED,
             },
           },
-          { strict: false }
+          { strict: false },
         );
         // if (!response.contacts.length) {
         //   console.log(`[SkipTraceProcessing] Processing for ${result} failed.`);
@@ -68,8 +69,15 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
         // 2. Save DirectSkip contacts (NO phone validation yet)
         const contactMap = await saveDirectSkipContacts(response, ownerId, poBoxAddress);
         // 2.5 Save Property Details and Lists from MongoDB
+        let propertyDetailsId;
         if (contactMap.mainContactId) {
-          await savePropertyDetails(contactMap.mainContactId, identityKey, propertyId, ownerId, response);
+          propertyDetailsId = await savePropertyDetails(
+            contactMap.mainContactId,
+            identityKey,
+            propertyId,
+            ownerId,
+            response,
+          );
         }
 
         // 3. Determine which phones to lookup based on deceased status
@@ -136,7 +144,7 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
                 stage: ProcessingStage.NUMBERLOOKUP_PROCESSING,
               },
             },
-            { strict: false }
+            { strict: false },
           );
 
           console.log(`[SkipTraceProcessing] Validating ${phonesToValidate.length} selected phones...`);
@@ -153,14 +161,14 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
 
               if (result.success) {
                 console.log(
-                  `[SkipTraceProcessing] ✓ Validated and stored phone ${phone.phoneNumber} (index: ${index})`
+                  `[SkipTraceProcessing] ✓ Validated and stored phone ${phone.phoneNumber} (index: ${index})`,
                 );
               } else {
                 console.log(
-                  `[SkipTraceProcessing] ✗ Skipped phone ${phone.phoneNumber} (index: ${index}): ${result.reason}`
+                  `[SkipTraceProcessing] ✗ Skipped phone ${phone.phoneNumber} (index: ${index}): ${result.reason}`,
                 );
               }
-            })
+            }),
           );
 
           await prisma.pipeline.update({
@@ -172,6 +180,8 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
             },
             data: {
               stage: ProcessingStage.NUMBERLOOKUP_COMPLETED,
+              contactId: contactMap.mainContactId,
+              propertyDetailsId,
               updatedAt: new Date(),
             },
           });
@@ -182,14 +192,14 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
                 stage: ProcessingStage.NUMBERLOOKUP_COMPLETED,
               },
             },
-            { strict: false }
+            { strict: false },
           );
         }
       } catch (err) {
         console.error(`[SkipTraceProcessing] Error processing row ${result.identityKey}:`, err);
         // Continue with other rows
       }
-    })
+    }),
   );
 };
 
@@ -201,7 +211,7 @@ interface ContactMap {
 const saveDirectSkipContacts = async (
   response: DirectSkipSearchResponse,
   ownerId: string,
-  poBoxAddress: string
+  poBoxAddress: string,
 ): Promise<ContactMap> => {
   const contactMap: ContactMap = {
     mainContactId: "",
@@ -278,8 +288,8 @@ const saveDirectSkipContacts = async (
               });
               console.log(
                 `[SaveContacts] Updated existing contact ${contact.id}: ${firstName} ${lastName} with ${JSON.stringify(
-                  updateData
-                )}`
+                  updateData,
+                )}`,
               );
             } else {
               console.log(`[SaveContacts] No updates needed for existing contact ${contact.id}`);
@@ -536,7 +546,7 @@ const savePropertyDetails = async (
   identityKey: string,
   propertyId: string,
   ownerId: string,
-  response: DirectSkipSearchResponse
+  response: DirectSkipSearchResponse,
 ) => {
   try {
     // const propertyId = response.propertyId;
@@ -569,7 +579,9 @@ const savePropertyDetails = async (
     const buildingUseCode = propData.land_use_code || "";
     const parcelId = propData.parcel || propData.apn || "";
     const lastSalePrice = propData.last_sale_price ? String(propData.last_sale_price) : "";
-    const lastSold = propData.last_sale_date || "";
+    const rawDate = propData.last_sale_date;
+
+    const lastSold: Date | null = rawDate ? new Date(rawDate) : null;
     const taxDelinquentValue = propData.tax_delinquent_amount ? String(propData.tax_delinquent_amount) : "";
     const yearBehindOnTaxes = propData.years_delinquent ? String(propData.years_delinquent) : "";
     const foreclosureDate = propData.foreclosure || propData.foreclosure_date || "";
@@ -686,6 +698,7 @@ const savePropertyDetails = async (
       });
       console.log(`[SavePropertyDetails] Linked property ${propertyDetails.id} to list ${listName}`);
     }
+    return propertyDetails?.id ?? null;
   } catch (err) {
     console.error(`[SavePropertyDetails] Error processing ${identityKey}:`, err);
   }
@@ -753,7 +766,7 @@ type ResolvedIdentity = {
 // }
 export function resolveMainContactOptimized(
   contacts: DirectSkipContact[],
-  input: { firstname?: string; lastname?: string }
+  input: { firstname?: string; lastname?: string },
 ): { contact: DirectSkipContact; name: DirectSkipNameRecord } | null {
   if (!contacts || contacts.length === 0) return null;
 

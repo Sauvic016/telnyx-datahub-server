@@ -6,6 +6,7 @@ import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
 import mongoose from "../mongoose";
+import { isValid, parse } from "date-fns";
 
 type ListType = {
   name: string;
@@ -290,6 +291,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             botId: job.startedByBotId,
           };
 
+          let lastSaleDate: Date | null = null;
           cols.forEach((col, idx) => {
             const value = row[idx];
 
@@ -317,6 +319,13 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
               }));
             }
 
+            if (normalizedCol === "last_sale_date" || normalizedCol === "last_sold") {
+              if (value) {
+                const parsed = parse(String(value).trim(), "MMM-dd-yyyy", new Date());
+                lastSaleDate = isValid(parsed) ? parsed : null;
+              }
+            }
+
             if (normalizedCol in mongoToPropertyDetailsMap) {
               propertyData[mongoToPropertyDetailsMap[normalizedCol]] = value;
             } else {
@@ -328,6 +337,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             propertyData.prevList = existingPropertyMap.get(propertyIdentityKey)?.currList;
           }
 
+          propertyData.last_sale_date = lastSaleDate;
           propertyData.isListChanged = false;
           const prevNames = new Set(
             propertyData.prevList.map((item: any) => (typeof item === "string" ? item : item.name)),

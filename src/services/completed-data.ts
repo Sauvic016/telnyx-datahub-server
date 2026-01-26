@@ -2,197 +2,8 @@ import prisma from "../db";
 import { Prisma } from "../generated/prisma/client";
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
-import { makeIdentityKey } from "../utils/helper";
-
-export const getCompletedData = async (filters?: { listName?: string; skip: number; take: number }) => {
-  // 1. Fetch all approved pipeline items
-
-  const [completedData, total] = await prisma.$transaction([
-    prisma.pipeline.findMany({
-      where: { decision: "APPROVED" },
-      orderBy: { updatedAt: "desc" },
-      skip: filters?.skip,
-      take: filters?.take,
-      select: {
-        propertyId: true,
-        ownerId: true,
-        stage: true,
-      },
-    }),
-    prisma.pipeline.count({
-      where: { decision: "APPROVED" },
-    }),
-  ]);
-
-  const ownerPropertyMap = new Map<string, Set<string>>();
-
-  for (const { ownerId, propertyId } of completedData) {
-    if (!ownerPropertyMap.has(ownerId)) {
-      ownerPropertyMap.set(ownerId, new Set());
-    }
-    ownerPropertyMap.get(ownerId)!.add(propertyId);
-  }
-
-  const ownerIds = [...new Set(completedData.map((k) => k.ownerId))];
-  const propertyIds = [...new Set(completedData.map((k) => k.propertyId))];
-  const ownersDetails = await Owner.find({
-    _id: { $in: ownerIds },
-  });
-
-  const propertiesDetails = await PropertyData.find({
-    _id: { $in: propertyIds },
-  });
-
-  const ownerIdToIdentityKeyMap = new Map(ownersDetails.map((o) => [o._id.toString(), o.identityKey]));
-  const propertyIdToIdentityKeyMap = new Map(propertiesDetails.map((p) => [p._id.toString(), p.identityKey]));
-
-  const ownerIdentityToPropertyIdentityMap = new Map<string, Set<string>>();
-
-  for (const { ownerId, propertyId } of completedData) {
-    const ownerIdentityKey = ownerIdToIdentityKeyMap.get(ownerId);
-    const propertyIdentityKey = propertyIdToIdentityKeyMap.get(propertyId);
-
-    if (!ownerIdentityKey || !propertyIdentityKey) continue;
-
-    let propertySet = ownerIdentityToPropertyIdentityMap.get(ownerIdentityKey);
-
-    if (!propertySet) {
-      propertySet = new Set<string>();
-      ownerIdentityToPropertyIdentityMap.set(ownerIdentityKey, propertySet);
-    }
-
-    propertySet.add(propertyIdentityKey);
-  }
-
-  const ownerIdentityKeys = ownersDetails.map((item) => item.identityKey);
-
-  const contactDetails = ownerIdentityKeys.map((identityKey) => {
-    const [firstName, lastName, mailingAddress] = identityKey.split("|");
-    return {
-      firstName,
-      lastName,
-      mailingAddress,
-    };
-  });
-
-  // const owners = await Owner.find({
-  //   _id: { $in: [...ownerPropertyMap.keys()] },
-  // }).populate("propertyIds");
-
-  // const result = owners.flatMap((owner) => {
-  //   const allowedPropertyIds = ownerPropertyMap.get(owner._id.toString());
-
-  //   if (!allowedPropertyIds) return [];
-
-  //   return owner.propertyIds
-  //     .filter((p: any) => allowedPropertyIds.has(p._id.toString()))
-  //     .map((p: any) => {
-  //       // const stage = stageMap.get(`${owner._id.toString()}|${p._id.toString()}`) ?? "UNKNOWN";
-
-  //       return {
-  //         ...owner.toObject(),
-  //         _id: owner._id,
-  //         property: p,
-  //         // stage, // ✅ ATTACHED HERE
-  //       };
-  //     });
-  // });
-
-  // const validResult = result.filter(
-  //   (item) =>
-  //     item.owner_first_name &&
-  //     item.owner_last_name &&
-  //     item.mailing_address &&
-  //     item.property?.property_address &&
-  //     item.property?.property_city &&
-  //     item.property?.property_state &&
-  //     item.property?.property_zip_code
-  // );
-
-  // Build the where clause
-  const contactData = await prisma.$transaction(async (tx) => {
-    const whereClause: any = {
-      OR: contactDetails.map((item) => ({
-        first_name: { equals: item.firstName, mode: "insensitive" },
-        last_name: { equals: item.lastName, mode: "insensitive" },
-        mailing_address: { equals: item.mailingAddress, mode: "insensitive" },
-      })),
-    };
-
-    return await tx.contacts.findMany({
-      where: whereClause,
-      include: {
-        directskips: true,
-        contact_phones: {
-          where: { telynxLookupId: { not: null } },
-          include: { telynxLookup: true },
-        },
-        property_details: { include: { lists: { include: { list: true } } } },
-        relationsFrom: {
-          include: {
-            toContact: {
-              select: {
-                first_name: true,
-                last_name: true,
-                contact_phones: {
-                  include: { telynxLookup: true },
-                },
-              },
-            },
-          },
-        },
-        relationsTo: {
-          include: {
-            fromContact: {
-              select: {
-                first_name: true,
-                last_name: true,
-                contact_phones: {
-                  include: { telynxLookup: true },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-  });
-  const contactDataList: any[] = [];
-  for (const contact of contactData) {
-    const IdentityKey = makeIdentityKey(
-      contact.first_name || "",
-      contact.last_name || "",
-      contact.mailing_address || ""
-    );
-    for (const property of contact.property_details || []) {
-      const propertyIdentityKey = makeIdentityKey(
-        property.property_address || "",
-        property.property_city || "",
-        property.property_state || "",
-        property.property_zip || ""
-      );
-      if (ownerIdentityToPropertyIdentityMap.get(IdentityKey)?.has(propertyIdentityKey)) {
-        if (filters?.listName) {
-          const properytListNameSet = new Set(property.lists.map((list) => list.list.name.toLowerCase()));
-
-          if (properytListNameSet.has(filters?.listName.toLowerCase())) {
-            contactDataList.push({
-              ...contact,
-              property_details: property,
-            });
-          }
-        } else {
-          contactDataList.push({
-            ...contact,
-            property_details: property,
-          });
-        }
-      }
-    }
-  }
-
-  return { contactDataList: contactDataList.map((contact) => formatContactData(contact)), totalItems: total };
-};
+import { formatRowData } from "../utils/completed-formatter";
+import { makeIdentityKey, resolveDateRange } from "../utils/helper";
 
 const formatContactData = (contact: any, matchedProperty?: any) => {
   const relatives = [
@@ -290,14 +101,202 @@ export const getCompletedDataForContactId = async (contactId: string) => {
   return formatContactData(contact);
 };
 
-const normalize = (v?: string | number | null) =>
-  String(v ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
+interface DateRangeFilter {
+  type?: string;
+  startDate?: string;
+  endDate?: string;
+}
 
-const isSameProperty = (a: any, b: any) =>
-  normalize(a.property_address) === normalize(b.property_address) &&
-  normalize(a.property_city) === normalize(b.property_city) &&
-  normalize(a.property_state) === normalize(b.property_state) &&
-  normalize(a.property_zip_code) === normalize(b.property_zip);
+export interface CompletedRecordsFilters {
+  listName?: string;
+  propertyStatusId?: string;
+  dateRange?: DateRangeFilter;
+  sortBy?: "updatedAt" | "lastSold";
+  sortOrder?: "asc" | "desc";
+}
+
+interface PaginationParams {
+  skip: number;
+  take: number;
+}
+
+// Helper function for dynamic sorting
+function buildOrderBy(
+  sortBy?: "updatedAt" | "lastSold",
+  sortOrder: "asc" | "desc" = "desc",
+): Prisma.PipelineOrderByWithRelationInput {
+  switch (sortBy) {
+    case "lastSold":
+      return {
+        propertyDetails: {
+          last_sold: {
+            sort: sortOrder === "asc" ? Prisma.SortOrder.asc : Prisma.SortOrder.desc,
+            nulls: Prisma.NullsOrder.last,
+          },
+        },
+      };
+    case "updatedAt":
+    default:
+      return { updatedAt: sortOrder };
+  }
+}
+
+export const fetchCompletedRecords = async (
+  filters?: CompletedRecordsFilters,
+  pagination?: PaginationParams,
+  searchQuery?: string,
+) => {
+  const sortOrder = filters?.sortOrder || "desc";
+
+  const andConditions: Prisma.PipelineWhereInput[] = [{ decision: "APPROVED" }];
+  if (filters?.listName && filters.listName !== "all-lists") {
+    andConditions.push({
+      propertyDetails: {
+        lists: {
+          some: {
+            list: {
+              name: { equals: filters.listName, mode: "insensitive" },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // Date range filter (on Pipeline.updatedAt)
+  if (filters?.dateRange?.startDate || filters?.dateRange?.endDate) {
+    const { startDate, endDate } = resolveDateRange({
+      filterDateType: filters.dateRange.type,
+      startDate: filters.dateRange.startDate,
+      endDate: filters.dateRange.endDate,
+    });
+
+    if (startDate) {
+      andConditions.push({ updatedAt: { gte: startDate } });
+    }
+    if (endDate) {
+      andConditions.push({ updatedAt: { lte: endDate } });
+    }
+  }
+
+  // Property status filter
+  if (filters?.propertyStatusId) {
+    andConditions.push({
+      propertyDetails: {
+        property_status: {
+          some: {
+            propertyStatusId: filters.propertyStatusId,
+          },
+        },
+      },
+    });
+  }
+
+  // Search query filter
+  if (searchQuery) {
+    const searchTerm = searchQuery.trim();
+    andConditions.push({
+      OR: [
+        {
+          propertyDetails: {
+            property_address: { contains: searchTerm, mode: "insensitive" },
+          },
+        },
+        {
+          contacts: {
+            mailing_address: { contains: searchTerm, mode: "insensitive" },
+          },
+        },
+        {
+          contacts: {
+            first_name: { contains: searchTerm, mode: "insensitive" },
+          },
+        },
+        {
+          contacts: {
+            last_name: { contains: searchTerm, mode: "insensitive" },
+          },
+        },
+        {
+          propertyDetails: {
+            lists: {
+              some: {
+                list: {
+                  name: { contains: searchTerm, mode: "insensitive" },
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+  }
+
+  // Combine all conditions
+  const where: Prisma.PipelineWhereInput = {
+    AND: andConditions,
+  };
+
+  // Build dynamic orderBy
+  const orderBy = buildOrderBy(filters?.sortBy, sortOrder);
+
+  // Include configuration
+  const include = {
+    contacts: {
+      include: {
+        directskips: true,
+        contact_phones: {
+          where: { telynxLookupId: { not: null } },
+          include: { telynxLookup: true },
+        },
+        relationsFrom: {
+          include: {
+            toContact: {
+              select: {
+                first_name: true,
+                last_name: true,
+                contact_phones: {
+                  include: { telynxLookup: true },
+                },
+              },
+            },
+          },
+        },
+        relationsTo: {
+          include: {
+            fromContact: {
+              select: {
+                first_name: true,
+                last_name: true,
+                contact_phones: {
+                  include: { telynxLookup: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    propertyDetails: {
+      include: {
+        lists: { include: { list: true } },
+        property_status: { include: { PropertyStatus: true } },
+      },
+    },
+  };
+
+  // Execute queries
+  const [rows, total] = await prisma.$transaction([
+    prisma.pipeline.findMany({
+      where,
+      orderBy,
+      skip: pagination?.skip,
+      take: pagination?.take,
+      include,
+    }),
+    prisma.pipeline.count({ where }),
+  ]);
+
+  const updatedRows = await formatRowData(rows);
+  return { rows: updatedRows, total };
+};

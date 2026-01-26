@@ -6,7 +6,7 @@ import fs from "fs";
 import "dotenv/config";
 import prisma from "./db";
 import { sendApprovedToDirectSkip } from "./services/directskip-batch";
-
+import { isValidQueryParam, getValidParam } from "./utils/query-params";
 import { JobType, RowDecisionStatus, ProcessingStage } from "./generated/prisma/enums";
 
 import recordGetter from "./services/contacts-check";
@@ -14,14 +14,21 @@ import { connectToMongo } from "./mongoose";
 
 import router from "./routes/bot-jobs";
 import jobSyncRouter from "./routes/job-sync";
+import propertyStatusRouter from "./routes/property-status";
+
 import { processSkipTraceResponse } from "./services/skip-trace-processing";
 import listsRouter from "./routes/lists";
-import { getCompletedData, getCompletedDataForContactId } from "./services/completed-data";
+import completedDataRouter from "./routes/completed-data";
+
+import { getCompletedDataForContactId } from "./services/completed-data";
 
 import { BOTMAP } from "./utils/constants";
 import { Owner } from "./models/Owner";
 import { syncScrappedDataOptimized } from "./services/mongo-sync-optimized";
 import editDetails from "./services/edit-details";
+import { backfillPipelineLinks } from "./services/backfill-pipeline";
+
+import { migrateLastSaleDateStrings } from "./utils/mongo-last-sale-date-migration";
 
 const app = express();
 
@@ -46,7 +53,9 @@ const upload = multer({ storage });
 
 app.use(router);
 app.use(jobSyncRouter);
+app.use(propertyStatusRouter);
 app.use("/lists", listsRouter);
+app.use("/completed-data", completedDataRouter);
 
 app.post("/receive", upload.array("files"), async (req, res) => {
   try {
@@ -556,35 +565,6 @@ app.get("/directskip-batch/:batchId", async (req, res) => {
 
 // Manual trigger for MongoDB sync (useful for retries or scheduled jobs)
 
-app.get("/completed-data", async (req, res) => {
-  try {
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 10));
-    const skip = (page - 1) * limit;
-    const listName = req.query.listName as string | undefined;
-
-    const { contactDataList, totalItems } = await getCompletedData({ listName, skip, take: limit });
-
-    // Fetch all available lists for the frontend dropdown
-    const lists = await prisma.list.findMany({
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
-    });
-
-    res.json({
-      data: contactDataList,
-      lists,
-      page,
-      limit,
-      totalItems,
-      totalPages: Math.ceil(totalItems / limit),
-    });
-  } catch (error) {
-    console.error("Error in /completed-data:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 app.get("/record-detail/:id", async (req, res) => {
   const contactId = req.params.id;
 
@@ -640,4 +620,6 @@ app.get("/mongodbsave", async (req, res) => {
 app.listen(PORT, async () => {
   console.log(`Receiver running on port ${PORT}`);
   connectToMongo();
+  // backfillPipelineLinks();
+  // migrateLastSaleDateStrings();
 });

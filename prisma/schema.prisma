@@ -54,13 +54,13 @@ model contact_phones {
   phone_type                 String?                      @db.VarChar
   phone_status               String?                      @db.VarChar
   phone_tags                 String?                      @db.VarChar
+  telynxLookupId             Int?
   contact_ai_profiles        contact_ai_profiles[]
   contact_number_ai_contexts contact_number_ai_contexts[]
   contact_phone_telnyx       contact_phone_telnyx[]
   contacts                   contacts?                    @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  job_targets                job_targets[]
   telynxLookup               TelynxLookup?                @relation(fields: [telynxLookupId], references: [id])
-  telynxLookupId             Int?
+  job_targets                job_targets[]
 
   @@index([phone_number])
 }
@@ -84,8 +84,12 @@ model contacts {
   mailing_city               String?                      @db.VarChar
   mailing_state              String?                      @db.VarChar
   mailing_zip                String?                      @db.VarChar
-  deceased                   String?                      @db.VarChar // "Y" or "N" from DirectSkip
   age                        String?                      @db.VarChar
+  deceased                   String?                      @db.VarChar
+  relationsFrom              ContactRelation[]            @relation("ContactFrom")
+  relationsTo                ContactRelation[]            @relation("ContactTo")
+  directskips                DirectSkip?
+  pipelines                  Pipeline[]
   contact_ai_profiles        contact_ai_profiles?
   contact_number_ai_contexts contact_number_ai_contexts[]
   contact_phones             contact_phones[]
@@ -95,9 +99,6 @@ model contacts {
   job_targets                job_targets[]
   outbound_messages          outbound_messages[]
   property_details           property_details[]
-  directskips                DirectSkip?
-  relationsFrom              ContactRelation[]            @relation("ContactFrom")
-  relationsTo                ContactRelation[]            @relation("ContactTo")
 
   @@unique([first_name, last_name, mailing_address], map: "uq_contact_identity")
   @@index([first_name, last_name, mailing_address], map: "ix_contact_identity")
@@ -106,14 +107,13 @@ model contacts {
 model ContactRelation {
   fromContactId          String
   toContactId            String
-  relationType           String?  @db.VarChar // spouse, partner, duplicate_of, relative, etc
-  confirmedBidirectional Boolean  @default(false) // Set to true when relationship seen from both sides
-  confirmationCount      Int      @default(1) // Increment each time relationship is re-discovered
+  relationType           String?  @db.VarChar
+  confirmedBidirectional Boolean  @default(false)
+  confirmationCount      Int      @default(1)
   firstSeenAt            DateTime @default(now())
   lastConfirmedAt        DateTime @updatedAt
-
-  fromContact contacts @relation("ContactFrom", fields: [fromContactId], onDelete: Cascade, references: [id])
-  toContact   contacts @relation("ContactTo", fields: [toContactId], onDelete: Cascade, references: [id])
+  fromContact            contacts @relation("ContactFrom", fields: [fromContactId], references: [id], onDelete: Cascade)
+  toContact              contacts @relation("ContactTo", fields: [toContactId], references: [id], onDelete: Cascade)
 
   @@id([fromContactId, toContactId])
 }
@@ -123,8 +123,8 @@ model DirectSkip {
   status           DirectSkipStatus
   skipTracedAt     DateTime
   contactId        String           @unique
-  contacts         contacts?        @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   confirmedAddress Json?            @db.Json
+  contacts         contacts         @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model conversation_ai_contexts {
@@ -303,58 +303,60 @@ model outbound_messages {
 }
 
 model property_details {
-  id                            String         @id @db.VarChar
-  contact_id                    String?        @db.VarChar
-  property_address              String?        @db.VarChar
-  property_city                 String?        @db.VarChar
-  property_state                String?        @db.VarChar
-  property_zip                  String?        @db.VarChar
-  list_stack                    String?        @db.VarChar
-  bedrooms                      String?        @db.VarChar
-  bathrooms                     String?        @db.VarChar
-  sqft                          String?        @db.VarChar
-  air_conditioner               String?        @db.VarChar
-  heating_type                  String?        @db.VarChar
-  storeys                       String?        @db.VarChar
-  year                          String?        @db.VarChar
-  above_grade                   String?        @db.VarChar
-  rental_value                  String?        @db.VarChar
-  building_use_code             String?        @db.VarChar
-  neighborhood_rating           String?        @db.VarChar
-  structure_type                String?        @db.VarChar
-  number_of_units               String?        @db.VarChar
-  apn                           String?        @db.VarChar
-  parcel_id                     String?        @db.VarChar
-  legal_description             String?        @db.VarChar
-  lot_size                      String?        @db.VarChar
-  land_zoning                   String?        @db.VarChar
-  tax_auction_date              String?        @db.VarChar
-  total_taxes                   String?        @db.VarChar
-  tax_delinquent_value          String?        @db.VarChar
-  tax_delinquent_year           String?        @db.VarChar
-  year_behind_on_taxes          String?        @db.VarChar
-  deed                          String?        @db.VarChar
-  mls                           String?        @db.VarChar
-  last_sale_price               String?        @db.VarChar
-  last_sold                     String?        @db.VarChar
-  lien_type                     String?        @db.VarChar
-  lien_recording_date           String?        @db.VarChar
-  personal_representative       String?        @db.VarChar
-  personal_representative_phone String?        @db.VarChar
-  probate_open_date             String?        @db.VarChar
-  attorney_on_file              String?        @db.VarChar
-  foreclosure_date              String?        @db.VarChar
-  bankruptcy_recording_date     String?        @db.VarChar
-  divorce_file_date             String?        @db.VarChar
-  loan_to_value                 String?        @db.VarChar
-  open_mortgages                String?        @db.VarChar
-  mortgage_type                 String?        @db.VarChar
-  owned_since                   String?        @db.VarChar
-  estimated_value               String?        @db.VarChar
-  job_targets                   job_targets[]
-  contacts                      contacts?      @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  lists                         PropertyList[]
+  id                            String                      @id @db.VarChar
+  contact_id                    String?                     @db.VarChar
+  property_address              String?                     @db.VarChar
+  property_city                 String?                     @db.VarChar
+  property_state                String?                     @db.VarChar
+  property_zip                  String?                     @db.VarChar
+  list_stack                    String?                     @db.VarChar
+  bedrooms                      String?                     @db.VarChar
+  bathrooms                     String?                     @db.VarChar
+  sqft                          String?                     @db.VarChar
+  air_conditioner               String?                     @db.VarChar
+  heating_type                  String?                     @db.VarChar
+  storeys                       String?                     @db.VarChar
+  year                          String?                     @db.VarChar
+  above_grade                   String?                     @db.VarChar
+  rental_value                  String?                     @db.VarChar
+  building_use_code             String?                     @db.VarChar
+  neighborhood_rating           String?                     @db.VarChar
+  structure_type                String?                     @db.VarChar
+  number_of_units               String?                     @db.VarChar
+  apn                           String?                     @db.VarChar
+  parcel_id                     String?                     @db.VarChar
+  legal_description             String?                     @db.VarChar
+  lot_size                      String?                     @db.VarChar
+  land_zoning                   String?                     @db.VarChar
+  tax_auction_date              String?                     @db.VarChar
+  total_taxes                   String?                     @db.VarChar
+  tax_delinquent_value          String?                     @db.VarChar
+  tax_delinquent_year           String?                     @db.VarChar
+  year_behind_on_taxes          String?                     @db.VarChar
+  deed                          String?                     @db.VarChar
+  mls                           String?                     @db.VarChar
+  last_sale_price               String?                     @db.VarChar
+  last_sold                     DateTime?                   @db.Timestamp(6)
+  lien_type                     String?                     @db.VarChar
+  lien_recording_date           String?                     @db.VarChar
+  personal_representative       String?                     @db.VarChar
+  personal_representative_phone String?                     @db.VarChar
+  probate_open_date             String?                     @db.VarChar
+  attorney_on_file              String?                     @db.VarChar
+  foreclosure_date              String?                     @db.VarChar
+  bankruptcy_recording_date     String?                     @db.VarChar
+  divorce_file_date             String?                     @db.VarChar
+  loan_to_value                 String?                     @db.VarChar
+  open_mortgages                String?                     @db.VarChar
+  mortgage_type                 String?                     @db.VarChar
+  owned_since                   String?                     @db.VarChar
+  estimated_value               String?                     @db.VarChar
   cdu                           String?
+  pipelines                     Pipeline[]
+  lists                         PropertyList[]
+  property_status               PropertyStatusAssociation[]
+  job_targets                   job_targets[]
+  contacts                      contacts?                   @relation(fields: [contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model tags {
@@ -409,6 +411,7 @@ model webapp_users {
   email                   String                   @unique @db.VarChar
   password_hash           String                   @db.VarChar
   created_at              DateTime?                @default(now()) @db.Timestamptz(6)
+  propertyStatuses        PropertyStatus[]
   contacts                contacts[]
   inbound_messages        inbound_messages[]
   jobs                    jobs[]
@@ -420,7 +423,7 @@ model webapp_users {
 }
 
 model BotJobs {
-  jobId          String   @id // UUID from producers
+  jobId          String   @id
   status         String
   currentBotId   Int?
   startedByBotId Int?
@@ -432,40 +435,38 @@ model BotJobs {
 }
 
 model Pipeline {
-  ownerId    String
-  propertyId String
-
-  decision RowDecisionStatus @default(PENDING)
-  stage    ProcessingStage   @default(PENDING)
-
-  error     String?
-  updatedAt DateTime @updatedAt
-  createdAt DateTime @default(now())
+  decision          RowDecisionStatus @default(PENDING)
+  stage             ProcessingStage   @default(PENDING)
+  error             String?
+  updatedAt         DateTime          @updatedAt
+  createdAt         DateTime          @default(now())
+  ownerId           String
+  propertyId        String
+  contactId         String?           @db.VarChar
+  propertyDetailsId String?           @db.VarChar
+  contacts          contacts?         @relation(fields: [contactId], references: [id])
+  propertyDetails   property_details? @relation(fields: [propertyDetailsId], references: [id])
 
   @@id([ownerId, propertyId])
+  @@index([decision])
+  @@index([stage])
+  @@index([contactId])
+  @@index([propertyDetailsId])
 }
 
 model TelynxLookup {
-  id Int @id @default(autoincrement())
-
-  // top-level fields
-  country_code    String?
-  national_format String?
-  phone_number    String? @unique
-  record_type     String?
-
-  // caller_name.*
-  caller_name_caller_name String?
-  caller_name_error_code  String?
-
-  // carrier.*
-  carrier_error_code          String?
-  carrier_mobile_country_code String?
-  carrier_mobile_network_code Int?
-  carrier_name                String?
-  carrier_type                String?
-
-  // portability.*
+  id                               Int              @id @default(autoincrement())
+  country_code                     String?
+  national_format                  String?
+  phone_number                     String?          @unique
+  record_type                      String?
+  caller_name_caller_name          String?
+  caller_name_error_code           String?
+  carrier_error_code               String?
+  carrier_mobile_country_code      String?
+  carrier_mobile_network_code      Int?
+  carrier_name                     String?
+  carrier_type                     String?
   portability_altspid              String?
   portability_altspid_carrier_name String?
   portability_altspid_carrier_type String?
@@ -479,16 +480,11 @@ model TelynxLookup {
   portability_spid_carrier_name    String?
   portability_spid_carrier_type    String?
   portability_state                String?
-
-  // fraud (null for now)
-  fraud_error String? // keeping 1D requirement, can add more later
-
-  // caller ID classification based on caller name matching
-  caller_id String? // IDMATCH, WC, NoID, Wrong Number
-
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  contactPhones contact_phones[]
+  fraud_error                      String?
+  createdAt                        DateTime         @default(now())
+  updatedAt                        DateTime         @updatedAt
+  caller_id                        String?
+  contactPhones                    contact_phones[]
 }
 
 model DirectSkipBatch {
@@ -497,37 +493,61 @@ model DirectSkipBatch {
   status          DirectSkipBatchStatus @default(PENDING)
   submittedAt     DateTime              @default(now())
   completedAt     DateTime?
-  directSkipJobId String?               @db.VarChar // ID returned by DirectSkip server
+  directSkipJobId String?               @db.VarChar
   error           String?
-  responseData    Json? // Store full response from DirectSkip
+  responseData    Json?
 }
 
 model List {
-  id   Int    @id @default(autoincrement())
-  name String @unique
-
-  properties PropertyList[] // join rows
+  id         Int            @id @default(autoincrement())
+  name       String         @unique
+  properties PropertyList[]
 }
 
 model PropertyList {
   propertyId String
+  listId     Int
+  list       List             @relation(fields: [listId], references: [id], onDelete: Cascade)
   property   property_details @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-
-  list   List @relation(fields: [listId], references: [id], onDelete: Cascade)
-  listId Int
 
   @@id([propertyId, listId])
 }
 
+model PropertyStatus {
+  id                         String                      @id @default(uuid()) @db.VarChar
+  userId                     String                      @db.VarChar
+  name                       String                      @db.VarChar
+  description                String?                     @db.VarChar
+  color                      String?                     @db.VarChar
+  createdAt                  DateTime                    @default(now()) @db.Timestamptz(6)
+  statusType                 PropertyStatusType
+  webapp_users               webapp_users                @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  propertyStatusAssociations PropertyStatusAssociation[]
+
+  @@unique([userId, statusType, name])
+}
+
+model PropertyStatusAssociation {
+  propertyId       String
+  propertyStatusId String
+  property         property_details @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  PropertyStatus   PropertyStatus   @relation(fields: [propertyStatusId], references: [id], onDelete: Cascade)
+
+  @@id([propertyId, propertyStatusId])
+}
+
+enum PropertyStatusType {
+  PRIMARY
+  SECONDARY
+}
+
 enum ProcessingStage {
   PENDING
-  APPROVED // row approved by user (mirrors decision but not required)
-
+  APPROVED
   SENT_TO_DIRECTSKIP
   DIRECTSKIP_PROCESSING
   DIRECTSKIP_COMPLETED
   DIRECTSKIP_FAILED
-
   NUMBERLOOKUP_PROCESSING
   NUMBERLOOKUP_COMPLETED
   NUMBERLOOKUP_FAILED

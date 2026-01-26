@@ -24,7 +24,9 @@ const PropertyDataSchema = new mongoose.Schema(
     tax_delinquent_amount: String,
     years_delinquent: Number,
 
-    last_sale_date: String,
+    last_sale_date: {
+      type: Date,
+    },
     previous_sale_date: String,
     last_sale_price: String,
     previous_sale_price: String,
@@ -71,7 +73,7 @@ const PropertyDataSchema = new mongoose.Schema(
 
     syncedAt: Date,
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 export const PropertyData = mongoose.model("PropertyData", PropertyDataSchema);
