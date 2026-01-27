@@ -106,6 +106,10 @@ interface DateRangeFilter {
   startDate?: string;
   endDate?: string;
 }
+interface IActivity {
+  smsSent?: "yes" | "no";
+  smsDelivered?: "yes" | "no";
+}
 
 export interface CompletedRecordsFilters {
   listName?: string;
@@ -113,6 +117,7 @@ export interface CompletedRecordsFilters {
   dateRange?: DateRangeFilter;
   sortBy?: "updatedAt" | "lastSold";
   sortOrder?: "asc" | "desc";
+  activity?: IActivity;
 }
 
 interface PaginationParams {
@@ -192,8 +197,140 @@ export const fetchCompletedRecords = async (
     });
   }
 
-  // Search query filter
+  // Activity filter using contact_phones.phone_number matched against outbound_messages.receiver_phone
+  if (filters?.activity) {
+    const activitySubqueries: string[] = [];
+
+    // Build subquery for SMS sent
+    if (filters.activity.smsSent === "yes") {
+      activitySubqueries.push(`
+        c.id IN (
+          SELECT DISTINCT cp.contact_id
+          FROM contact_phones cp
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+
+          UNION
+
+          SELECT DISTINCT cr."fromContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+
+          UNION
+
+          SELECT DISTINCT cr."toContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+        )
+      `);
+    } else if (filters.activity.smsSent === "no") {
+      activitySubqueries.push(`
+        c.id NOT IN (
+          SELECT DISTINCT cp.contact_id
+          FROM contact_phones cp
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+
+          UNION
+
+          SELECT DISTINCT cr."fromContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+
+          UNION
+
+          SELECT DISTINCT cr."toContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+        )
+      `);
+    }
+
+    // Build subquery for SMS delivered
+    if (filters.activity.smsDelivered === "yes") {
+      activitySubqueries.push(`
+        c.id IN (
+          SELECT DISTINCT cp.contact_id
+          FROM contact_phones cp
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+          WHERE om.status = 'delivered'
+
+          UNION
+
+          SELECT DISTINCT cr."fromContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+          WHERE om.status = 'delivered'
+
+          UNION
+
+          SELECT DISTINCT cr."toContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+          WHERE om.status = 'delivered'
+        )
+      `);
+    } else if (filters.activity.smsDelivered === "no") {
+      activitySubqueries.push(`
+        c.id NOT IN (
+          SELECT DISTINCT cp.contact_id
+          FROM contact_phones cp
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+          WHERE om.status = 'delivered'
+
+          UNION
+
+          SELECT DISTINCT cr."fromContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+          WHERE om.status = 'delivered'
+
+          UNION
+
+          SELECT DISTINCT cr."toContactId" as contact_id
+          FROM "ContactRelation" cr
+          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
+          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+          WHERE om.status = 'delivered'
+        )
+      `);
+    }
+
+    // Fetch matching contact IDs using raw SQL
+    if (activitySubqueries.length > 0) {
+      const combinedSubquery = activitySubqueries.join(" AND ");
+      const rawQuery = `
+        SELECT DISTINCT p."contactId"
+        FROM "Pipeline" p
+        JOIN contacts c ON c.id = p."contactId"
+        WHERE ${combinedSubquery}
+      `;
+
+      const matchingContacts = await prisma.$queryRawUnsafe<{ contactId: string }[]>(rawQuery);
+
+      const contactIds = matchingContacts.map((row) => row.contactId);
+
+      // Add contact ID filter to main query
+      if (contactIds.length > 0) {
+        andConditions.push({
+          contactId: { in: contactIds },
+        });
+      } else {
+        // No matching contacts, return empty result
+        andConditions.push({
+          contactId: { in: [] },
+        });
+      }
+    }
+  }
+
   if (searchQuery) {
+    // Search query filter
     const searchTerm = searchQuery.trim();
     andConditions.push({
       OR: [

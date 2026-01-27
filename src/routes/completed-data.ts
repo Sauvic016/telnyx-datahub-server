@@ -53,6 +53,14 @@ router.get("/", async (req, res) => {
       filters.sortOrder = sortOrder;
     }
 
+    const activityType = req.query.activityType as string | undefined;
+    const activityValue = req.query.activityValue as string | undefined;
+    if (activityType) {
+      filters.activity = {
+        [activityType]: activityValue,
+      };
+    }
+
     const searchQuery = req.query.search as string | undefined;
 
     const result = await fetchCompletedRecords(

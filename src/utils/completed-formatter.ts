@@ -1,5 +1,6 @@
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
+import prisma from "../db";
 // ============ TYPES ============
 
 interface FormattedContactPhone {
@@ -11,6 +12,9 @@ interface FormattedContactPhone {
   callerId: string | null;
   isLookedUp: boolean;
   telynxLookup: any | null;
+  smsSent: boolean;
+  smsDelivered: boolean;
+  propertyAddressFound: boolean;
 }
 
 interface FormattedRelative {
@@ -19,6 +23,9 @@ interface FormattedRelative {
   last_name: string | null;
   relationType: string | null;
   contact_phones: FormattedContactPhone[];
+  smsSent: boolean;
+  smsDelivered: boolean;
+  propertyAddressFound: boolean;
 }
 
 interface FormattedContact {
@@ -39,6 +46,9 @@ interface FormattedContact {
   relatives: FormattedRelative[];
   contact_phones: FormattedContactPhone[];
   directskips?: any | null;
+  smsSent: boolean;
+  smsDelivered: boolean;
+  propertyAddressFound: boolean;
 }
 
 interface FormattedList {
@@ -98,15 +108,305 @@ interface FormattedRow {
   propertyDetails: FormattedPropertyDetails | null;
 }
 
+// ============ SMS STATUS BATCH QUERY ============
+
+interface ContactSmsStatus {
+  contactId: string;
+  smsSent: boolean;
+  smsDelivered: boolean;
+  propertyAddressFound: boolean;
+}
+
+interface PhoneSmsStatus {
+  phoneId: string;
+  smsSent: boolean;
+  smsDelivered: boolean;
+  propertyAddressFound: boolean;
+}
+
+interface PhonePropertyMap {
+  phoneId: string;
+  phoneNumber: string;
+  contactId: string;
+  propertyAddress: string;
+}
+
+const fetchSmsStatusBatch = async (
+  contactIds: string[],
+  propertyAddressMap: Map<string, string>,
+  phonePropertyMapList: PhonePropertyMap[],
+): Promise<{
+  contactStatusMap: Map<string, ContactSmsStatus>;
+  phoneStatusMap: Map<string, PhoneSmsStatus>;
+}> => {
+  if (contactIds.length === 0) {
+    return {
+      contactStatusMap: new Map(),
+      phoneStatusMap: new Map(),
+    };
+  }
+
+  const contactStatusMap = new Map<string, ContactSmsStatus>();
+  const phoneStatusMap = new Map<string, PhoneSmsStatus>();
+
+  // Build property address CTE for contacts
+  const propertyAddressEntries = Array.from(propertyAddressMap.entries());
+  const contactPropertyMapCTE =
+    propertyAddressEntries.length > 0
+      ? propertyAddressEntries
+          .map(
+            ([contactId, address]) =>
+              `SELECT '${contactId.replace(/'/g, "''")}' AS contact_id, '${address.toLowerCase().replace(/'/g, "''")}' AS property_address`,
+          )
+          .join(" UNION ALL ")
+      : "SELECT NULL::varchar AS contact_id, NULL::varchar AS property_address WHERE FALSE";
+
+  // Build property address CTE for phones
+  const phonePropertyMapCTE =
+    phonePropertyMapList.length > 0
+      ? phonePropertyMapList
+          .map(
+            (p) =>
+              `SELECT '${p.phoneId.replace(/'/g, "''")}' AS phone_id, '${p.phoneNumber.replace(/'/g, "''")}' AS phone_number, '${p.propertyAddress.toLowerCase().replace(/'/g, "''")}' AS property_address`,
+          )
+          .join(" UNION ALL ")
+      : "SELECT NULL::varchar AS phone_id, NULL::varchar AS phone_number, NULL::varchar AS property_address WHERE FALSE";
+
+  // Query for contact-level status
+  const contactResults = await prisma.$queryRawUnsafe<
+    {
+      contact_id: string;
+      sms_sent: boolean;
+      sms_delivered: boolean;
+      property_address_found: boolean;
+    }[]
+  >(
+    `
+    WITH contact_ids AS (
+      SELECT unnest(ARRAY[${contactIds.map((id) => `'${id.replace(/'/g, "''")}'`).join(", ")}]) AS contact_id
+    ),
+    contact_property_map AS (
+      ${contactPropertyMapCTE}
+    )
+    SELECT
+      ci.contact_id,
+      EXISTS (
+        SELECT 1
+        FROM contact_phones cp
+        JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+        WHERE cp.contact_id = ci.contact_id
+        LIMIT 1
+      ) AS sms_sent,
+      EXISTS (
+        SELECT 1
+        FROM contact_phones cp
+        JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+        WHERE cp.contact_id = ci.contact_id
+          AND om.status = 'delivered'
+        LIMIT 1
+      ) AS sms_delivered,
+      EXISTS (
+        SELECT 1
+        FROM contact_phones cp
+        JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
+        JOIN contact_property_map cpm ON cpm.contact_id = ci.contact_id
+        WHERE cp.contact_id = ci.contact_id
+          AND LOWER(om.text) LIKE '%' || cpm.property_address || '%'
+        ORDER BY om.created_at DESC
+        LIMIT 5
+      ) AS property_address_found
+    FROM contact_ids ci
+    `,
+  );
+
+  contactResults.forEach((result) => {
+    contactStatusMap.set(result.contact_id, {
+      contactId: result.contact_id,
+      smsSent: result.sms_sent,
+      smsDelivered: result.sms_delivered,
+      propertyAddressFound: result.property_address_found,
+    });
+  });
+
+  // Query for phone-level status
+  if (phonePropertyMapList.length > 0) {
+    const phoneResults = await prisma.$queryRawUnsafe<
+      {
+        phone_id: string;
+        sms_sent: boolean;
+        sms_delivered: boolean;
+        property_address_found: boolean;
+      }[]
+    >(
+      `
+      WITH phone_property_map AS (
+        ${phonePropertyMapCTE}
+      )
+      SELECT
+        ppm.phone_id,
+        EXISTS (
+          SELECT 1
+          FROM outbound_messages om
+          WHERE LOWER(om.receiver_phone) = LOWER(ppm.phone_number)
+          LIMIT 1
+        ) AS sms_sent,
+        EXISTS (
+          SELECT 1
+          FROM outbound_messages om
+          WHERE LOWER(om.receiver_phone) = LOWER(ppm.phone_number)
+            AND om.status = 'delivered'
+          LIMIT 1
+        ) AS sms_delivered,
+        EXISTS (
+          SELECT 1
+          FROM outbound_messages om
+          WHERE LOWER(om.receiver_phone) = LOWER(ppm.phone_number)
+            AND LOWER(om.text) LIKE '%' || ppm.property_address || '%'
+          ORDER BY om.created_at DESC
+          LIMIT 5
+        ) AS property_address_found
+      FROM phone_property_map ppm
+      `,
+    );
+
+    phoneResults.forEach((result) => {
+      phoneStatusMap.set(result.phone_id, {
+        phoneId: result.phone_id,
+        smsSent: result.sms_sent,
+        smsDelivered: result.sms_delivered,
+        propertyAddressFound: result.property_address_found,
+      });
+    });
+  }
+
+  return { contactStatusMap, phoneStatusMap };
+};
+
 // ============ MAIN FORMATTER ============
 
 const formatRowData = async (rows: any[]): Promise<FormattedRow[]> => {
+  // Collect all contact IDs, phone IDs, and build property address maps
+  const contactIdsWithPhones = new Set<string>();
+  const contactIdsWithoutPhones = new Set<string>();
+  const propertyAddressMap = new Map<string, string>();
+  const phonePropertyMapList: PhonePropertyMap[] = [];
+
+  rows.forEach((row) => {
+    const propertyAddress = row.propertyDetails?.property_address;
+
+    if (row.contactId) {
+      // Map contact to their property address
+      if (propertyAddress) {
+        propertyAddressMap.set(row.contactId, propertyAddress);
+      }
+
+      // Collect phone information for the main contact
+      if (row.contacts?.contact_phones && row.contacts.contact_phones.length > 0) {
+        contactIdsWithPhones.add(row.contactId);
+        if (propertyAddress) {
+          row.contacts.contact_phones.forEach((phone: any) => {
+            if (phone.id && phone.phone_number) {
+              phonePropertyMapList.push({
+                phoneId: phone.id,
+                phoneNumber: phone.phone_number,
+                contactId: row.contactId,
+                propertyAddress: propertyAddress,
+              });
+            }
+          });
+        }
+      } else {
+        contactIdsWithoutPhones.add(row.contactId);
+      }
+    }
+
+    // Also collect relative IDs and their phones
+    if (row.contacts?.relationsFrom) {
+      row.contacts.relationsFrom.forEach((rel: any) => {
+        if (rel.toContact?.id) {
+          // Relatives share the same property address from the pipeline
+          if (propertyAddress) {
+            propertyAddressMap.set(rel.toContact.id, propertyAddress);
+          }
+
+          // Collect phone information for relatives
+          if (rel.toContact.contact_phones && rel.toContact.contact_phones.length > 0) {
+            contactIdsWithPhones.add(rel.toContact.id);
+            if (propertyAddress) {
+              rel.toContact.contact_phones.forEach((phone: any) => {
+                if (phone.id && phone.phone_number) {
+                  phonePropertyMapList.push({
+                    phoneId: phone.id,
+                    phoneNumber: phone.phone_number,
+                    contactId: rel.toContact.id,
+                    propertyAddress: propertyAddress,
+                  });
+                }
+              });
+            }
+          } else {
+            contactIdsWithoutPhones.add(rel.toContact.id);
+          }
+        }
+      });
+    }
+
+    if (row.contacts?.relationsTo) {
+      row.contacts.relationsTo.forEach((rel: any) => {
+        if (rel.fromContact?.id) {
+          // Relatives share the same property address from the pipeline
+          if (propertyAddress) {
+            propertyAddressMap.set(rel.fromContact.id, propertyAddress);
+          }
+
+          // Collect phone information for relatives
+          if (rel.fromContact.contact_phones && rel.fromContact.contact_phones.length > 0) {
+            contactIdsWithPhones.add(rel.fromContact.id);
+            if (propertyAddress) {
+              rel.fromContact.contact_phones.forEach((phone: any) => {
+                if (phone.id && phone.phone_number) {
+                  phonePropertyMapList.push({
+                    phoneId: phone.id,
+                    phoneNumber: phone.phone_number,
+                    contactId: rel.fromContact.id,
+                    propertyAddress: propertyAddress,
+                  });
+                }
+              });
+            }
+          } else {
+            contactIdsWithoutPhones.add(rel.fromContact.id);
+          }
+        }
+      });
+    }
+  });
+
+  // Fetch SMS status for contacts with phones only
+  const contactIdsToQuery = Array.from(contactIdsWithPhones);
+  const { contactStatusMap, phoneStatusMap } = await fetchSmsStatusBatch(
+    contactIdsToQuery,
+    propertyAddressMap,
+    phonePropertyMapList,
+  );
+
+  // Add false status for contacts without phones (early return optimization)
+  contactIdsWithoutPhones.forEach((contactId) => {
+    contactStatusMap.set(contactId, {
+      contactId,
+      smsSent: false,
+      smsDelivered: false,
+      propertyAddressFound: false,
+    });
+  });
+
+  // Format rows with SMS status
   const updatedRows = await Promise.all(
     rows.map(async (row: any) => {
       const hasPrismaData = row.contactId && row.propertyDetailsId;
 
       if (hasPrismaData) {
-        return formatPrismaRow(row);
+        return formatPrismaRow(row, contactStatusMap, phoneStatusMap);
       } else {
         return await formatMongoRow(row);
       }
@@ -118,7 +418,11 @@ const formatRowData = async (rows: any[]): Promise<FormattedRow[]> => {
 
 // ============ PRISMA ROW FORMATTER ============
 
-const formatPrismaRow = (row: any): FormattedRow => {
+const formatPrismaRow = (
+  row: any,
+  contactStatusMap: Map<string, ContactSmsStatus>,
+  phoneStatusMap: Map<string, PhoneSmsStatus>,
+): FormattedRow => {
   return {
     ownerId: row.ownerId,
     propertyId: row.propertyId,
@@ -129,12 +433,16 @@ const formatPrismaRow = (row: any): FormattedRow => {
     updatedAt: row.updatedAt,
     createdAt: row.createdAt,
     source: "prisma",
-    contacts: row.contacts ? formatPrismaContact(row.contacts) : null,
+    contacts: row.contacts ? formatPrismaContact(row.contacts, contactStatusMap, phoneStatusMap) : null,
     propertyDetails: row.propertyDetails ? formatPrismaPropertyDetails(row.propertyDetails) : null,
   };
 };
 
-const formatPrismaContact = (contact: any): FormattedContact => {
+const formatPrismaContact = (
+  contact: any,
+  contactStatusMap: Map<string, ContactSmsStatus>,
+  phoneStatusMap: Map<string, PhoneSmsStatus>,
+): FormattedContact => {
   if (!contact || Object.keys(contact).length === 0) {
     return {
       first_name: null,
@@ -145,8 +453,18 @@ const formatPrismaContact = (contact: any): FormattedContact => {
       mailing_zip: null,
       relatives: [],
       contact_phones: [],
+      smsSent: false,
+      smsDelivered: false,
+      propertyAddressFound: false,
     };
   }
+
+  const smsStatus = contactStatusMap.get(contact.id) || {
+    contactId: contact.id,
+    smsSent: false,
+    smsDelivered: false,
+    propertyAddressFound: false,
+  };
 
   return {
     id: contact.id,
@@ -158,13 +476,20 @@ const formatPrismaContact = (contact: any): FormattedContact => {
     mailing_zip: contact.mailing_zip ?? null,
     deceased: contact.deceased ?? null,
     age: contact.age ?? null,
-    relatives: getRelativesFromPrisma(contact),
-    contact_phones: formatPrismaContactPhones(contact.contact_phones),
+    relatives: getRelativesFromPrisma(contact, contactStatusMap, phoneStatusMap),
+    contact_phones: formatPrismaContactPhones(contact.contact_phones, phoneStatusMap),
     directskips: contact.directskips ?? null,
+    smsSent: smsStatus.smsSent,
+    smsDelivered: smsStatus.smsDelivered,
+    propertyAddressFound: smsStatus.propertyAddressFound,
   };
 };
 
-const getRelativesFromPrisma = (contact: any): FormattedRelative[] => {
+const getRelativesFromPrisma = (
+  contact: any,
+  contactStatusMap: Map<string, ContactSmsStatus>,
+  phoneStatusMap: Map<string, PhoneSmsStatus>,
+): FormattedRelative[] => {
   if (!contact) return [];
 
   const relationsFrom = contact.relationsFrom ?? [];
@@ -177,38 +502,77 @@ const getRelativesFromPrisma = (contact: any): FormattedRelative[] => {
   return [
     ...relationsFrom
       .filter((rel: any) => rel.toContact)
-      .map((rel: any) => ({
-        id: rel.toContact.id,
-        first_name: rel.toContact.first_name ?? null,
-        last_name: rel.toContact.last_name ?? null,
-        relationType: rel.relationType ?? null,
-        contact_phones: formatPrismaContactPhones(rel.toContact.contact_phones),
-      })),
+      .map((rel: any) => {
+        const smsStatus = contactStatusMap.get(rel.toContact.id) || {
+          contactId: rel.toContact.id,
+          smsSent: false,
+          smsDelivered: false,
+          propertyAddressFound: false,
+        };
+
+        return {
+          id: rel.toContact.id,
+          first_name: rel.toContact.first_name ?? null,
+          last_name: rel.toContact.last_name ?? null,
+          relationType: rel.relationType ?? null,
+          contact_phones: formatPrismaContactPhones(rel.toContact.contact_phones, phoneStatusMap),
+          smsSent: smsStatus.smsSent,
+          smsDelivered: smsStatus.smsDelivered,
+          propertyAddressFound: smsStatus.propertyAddressFound,
+        };
+      }),
     ...relationsTo
       .filter((rel: any) => rel.fromContact)
-      .map((rel: any) => ({
-        id: rel.fromContact.id,
-        first_name: rel.fromContact.first_name ?? null,
-        last_name: rel.fromContact.last_name ?? null,
-        relationType: rel.relationType ?? null,
-        contact_phones: formatPrismaContactPhones(rel.fromContact.contact_phones),
-      })),
+      .map((rel: any) => {
+        const smsStatus = contactStatusMap.get(rel.fromContact.id) || {
+          contactId: rel.fromContact.id,
+          smsSent: false,
+          smsDelivered: false,
+          propertyAddressFound: false,
+        };
+
+        return {
+          id: rel.fromContact.id,
+          first_name: rel.fromContact.first_name ?? null,
+          last_name: rel.fromContact.last_name ?? null,
+          relationType: rel.relationType ?? null,
+          contact_phones: formatPrismaContactPhones(rel.fromContact.contact_phones, phoneStatusMap),
+          smsSent: smsStatus.smsSent,
+          smsDelivered: smsStatus.smsDelivered,
+          propertyAddressFound: smsStatus.propertyAddressFound,
+        };
+      }),
   ];
 };
 
-const formatPrismaContactPhones = (phones: any[] | null | undefined): FormattedContactPhone[] => {
+const formatPrismaContactPhones = (
+  phones: any[] | null | undefined,
+  phoneStatusMap: Map<string, PhoneSmsStatus>,
+): FormattedContactPhone[] => {
   if (!phones || !Array.isArray(phones)) return [];
 
-  return phones.map((phone: any) => ({
-    id: phone.id,
-    phone_number: phone.phone_number ?? null,
-    phone_type: phone.phone_type ?? null,
-    phone_status: phone.phone_status ?? null,
-    phone_tags: phone.phone_tags ?? null,
-    callerId: phone.telynxLookup?.caller_id ?? null,
-    isLookedUp: !!phone.telynxLookup,
-    telynxLookup: phone.telynxLookup ?? null,
-  }));
+  return phones.map((phone: any) => {
+    const phoneStatus = phoneStatusMap.get(phone.id) || {
+      phoneId: phone.id,
+      smsSent: false,
+      smsDelivered: false,
+      propertyAddressFound: false,
+    };
+
+    return {
+      id: phone.id,
+      phone_number: phone.phone_number ?? null,
+      phone_type: phone.phone_type ?? null,
+      phone_status: phone.phone_status ?? null,
+      phone_tags: phone.phone_tags ?? null,
+      callerId: phone.telynxLookup?.caller_id ?? null,
+      isLookedUp: !!phone.telynxLookup,
+      telynxLookup: phone.telynxLookup ?? null,
+      smsSent: phoneStatus.smsSent,
+      smsDelivered: phoneStatus.smsDelivered,
+      propertyAddressFound: phoneStatus.propertyAddressFound,
+    };
+  });
 };
 
 const formatPrismaPropertyDetails = (propertyDetails: any): FormattedPropertyDetails => {
@@ -337,6 +701,9 @@ const formatMongoContact = (owner: any): FormattedContact => {
       mailing_zip: null,
       relatives: [],
       contact_phones: [],
+      smsSent: false,
+      smsDelivered: false,
+      propertyAddressFound: false,
     };
   }
 
@@ -356,6 +723,9 @@ const formatMongoContact = (owner: any): FormattedContact => {
     relatives: [],
     contact_phones: [],
     directskips: null,
+    smsSent: false,
+    smsDelivered: false,
+    propertyAddressFound: false,
   };
 };
 
