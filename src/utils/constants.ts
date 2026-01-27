@@ -1,18 +1,60 @@
-export interface BotConfig {
+const hour = 60 * 60 * 1000;
+
+interface BotConfig {
   name: string;
   isStarter: boolean;
   cooldown: number;
   flow: number[] | null; // defines which bots follow this one
   errorCooldown: number;
+  runAt?: string[];
+  timezone?: string;
 }
-const hour = 60 * 60 * 1000;
+
 export const BOTMAP: Record<number, BotConfig> = {
-  1: { name: "address-bot", isStarter: true, flow: [1, 4], cooldown: 3 * hour, errorCooldown: 48 * hour },
-  2: { name: "ssfweb-parcel-bot", isStarter: true, flow: [2, 4], cooldown: 12 * hour, errorCooldown: 48 * hour },
-  3: { name: "clerkweb-parcel-bot", isStarter: true, flow: [3, 4], cooldown: 12 * hour, errorCooldown: 48 * hour },
-  4: { name: "summitoh_v5", isStarter: false, flow: null, cooldown: 6 * hour, errorCooldown: 48 * hour },
-  5: { name: "summitoh_v5_standalone", isStarter: true, flow: null, cooldown: 6 * hour, errorCooldown: 48 * hour },
+  1: {
+    name: "address-bot",
+    isStarter: true,
+    flow: [1, 4],
+    cooldown: 3 * hour,
+    errorCooldown: hour,
+    runAt: [],
+  },
+  2: {
+    name: "ssfweb-parcel-bot",
+    isStarter: true,
+    flow: [2, 4],
+    cooldown: hour,
+    errorCooldown: hour,
+    runAt: ["09:00", "15:00"],
+    timezone: "America/New_York"
+  },
+  3: {
+    name: "clerkweb-parcel-bot",
+    isStarter: true,
+    flow: [3, 4],
+    cooldown: hour,
+    errorCooldown: hour,
+    runAt: ["09:00", "15:00"],
+    timezone: "America/New_York"
+  },
+  4: {
+    name: "summitoh_v5",
+    isStarter: false,
+    flow: null,
+    cooldown: hour,
+    errorCooldown: hour,
+    runAt: [],
+  },
+  5: {
+    name: "summitoh_master",
+    isStarter: true,
+    flow: null,
+    cooldown: 3 * hour,
+    errorCooldown: hour,
+    runAt: [],
+  },
 };
+
 export const us_state = [
   "al", "alabama",
   "ak", "alaska",
@@ -65,3 +107,30 @@ export const us_state = [
   "wi", "wisconsin",
   "wy", "wyoming"
 ]
+
+
+export const SUMMITOH_SPECIAL_CODES = new Set([
+  "C05",
+  "M91",
+  "M26",
+  "M24",
+  "M87",
+  "M11",
+  "M84",
+  "M87",
+  "M29",
+  "M14",
+  "C05",
+  "M12",
+  "M92",
+  "M55",
+  "C12",
+  "C55",
+  "M31",
+  "T11",
+  "T87",
+  "M90",
+  "55 NEORSD",
+  "12 NEORSD",
+  "M62",
+]);

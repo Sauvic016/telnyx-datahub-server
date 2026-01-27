@@ -7,6 +7,7 @@ import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
 import mongoose from "../mongoose";
 import { isValid, parse } from "date-fns";
+import { BOTMAP, SUMMITOH_SPECIAL_CODES } from "../utils/constants";
 
 type ListType = {
   name: string;
@@ -124,16 +125,112 @@ const mongoToPropertyDetailsMap: Record<string, string> = {
   special_assessments_code_2025: "special_assessments_code_2025",
 };
 
-function pickColumn(columns: string[], candidates: string[]): string | null {
+// ========== HELPER FUNCTIONS ==========
+
+function normalizeColumnName(col: string): string {
+  return col
+    .trim()
+    .replace(/^"|"$/g, "")
+    .toLowerCase()
+    .replace(/[\s\/\-\.]+/g, "_")
+    .replace(/[^a-z0-9_]/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function pickColumn(columns: string[], candidates: string[], botId?: number): string | null {
   const normalize = (s: string) => s.trim().toLowerCase().replace(/^"|"$/g, "");
   const lowerCols = columns.map(normalize);
 
+  // First try exact match (for old format and non-bot-prefixed columns)
   for (const cand of candidates) {
     const candNorm = normalize(cand);
     const idx = lowerCols.indexOf(candNorm);
     if (idx !== -1) return columns[idx];
   }
+
+  // If botId provided, try bot-prefixed versions (for new format)
+  if (botId !== undefined) {
+    for (const cand of candidates) {
+      const candNorm = normalize(cand);
+      const botPrefixedCand = `bot_${botId}_${candNorm}`;
+      const idx = lowerCols.indexOf(botPrefixedCand);
+      if (idx !== -1) return columns[idx];
+    }
+  }
+
   return null;
+}
+
+function buildRowRecord(cols: string[], row: unknown[], botId: number): Record<string, any> {
+  const rowRecord: Record<string, any> = {};
+
+  cols.forEach((col, idx) => {
+    const value = row[idx];
+    const normalizedCol = normalizeColumnName(col);
+
+    // Check if column has bot prefix and extract it
+    const botPrefixRegex = /^bot_(\d+)_(.+)$/;
+    const match = normalizedCol.match(botPrefixRegex);
+
+    let colNameWithoutBotPrefix = normalizedCol;
+    let colNameWithBotPrefix = normalizedCol;
+
+    if (match) {
+      // New format: has bot prefix
+      colNameWithoutBotPrefix = match[2];
+      colNameWithBotPrefix = normalizedCol;
+    } else {
+      // Old format: no bot prefix
+      colNameWithoutBotPrefix = normalizedCol;
+      colNameWithBotPrefix = `bot_${botId}_${normalizedCol}`;
+    }
+
+    // Store both versions for compatibility
+    rowRecord[colNameWithoutBotPrefix] = value;
+    rowRecord[colNameWithBotPrefix] = value;
+  });
+
+  return rowRecord;
+}
+
+function extractPropertyAndOwnerData(
+  cols: string[],
+  row: unknown[],
+  rowRecord: Record<string, any>,
+  botId: number,
+  mongoToPropertyDetailsMap: Record<string, string>
+): { propertyData: Record<string, any>; ownerData: Record<string, any>; lastSaleDate: Date | null } {
+  const propertyData: Record<string, any> = {};
+  const ownerData: Record<string, any> = {};
+  let lastSaleDate: Date | null = null;
+
+  cols.forEach((col, idx) => {
+    const value = row[idx];
+    const normalizedCol = normalizeColumnName(col);
+
+    // Extract column name without bot prefix for database storage
+    const botPrefixRegex = /^bot_(\d+)_(.+)$/;
+    const match = normalizedCol.match(botPrefixRegex);
+    const colNameWithoutBotPrefix = match ? match[2] : normalizedCol;
+
+    // Handle last sale date parsing
+    if (colNameWithoutBotPrefix === "last_sale_date" || colNameWithoutBotPrefix === "last_sold") {
+      if (value) {
+        const parsed = parse(String(value).trim(), "MMM-dd-yyyy", new Date());
+        lastSaleDate = isValid(parsed) ? parsed : null;
+      }
+    }
+
+    // Distribute data to property or owner
+    if (colNameWithoutBotPrefix in mongoToPropertyDetailsMap) {
+      propertyData[mongoToPropertyDetailsMap[colNameWithoutBotPrefix]] = value;
+    } else {
+      ownerData[colNameWithoutBotPrefix] = value;
+    }
+  });
+
+  return { propertyData, ownerData, lastSaleDate };
 }
 
 export const syncScrappedDataOptimized = async (manual?: boolean) => {
@@ -163,17 +260,18 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
         const df = pl.readCSV(filePath);
         const cols = df.columns;
 
-        const firstNameCol = pickColumn(cols, ["first_name", "First Name", "Owner First Name"]);
-        const lastNameCol = pickColumn(cols, ["last_name", "Last Name", "Owner Last Name"]);
-        const mailingAddressCol = pickColumn(cols, ["mailing_address", "Mailing Address"]);
-        const propertyAddressCol = pickColumn(cols, ["property_address", "Property Address"]);
-        const mailingZipCol = pickColumn(cols, ["mailing_zip", "Mailing Zip Code"]);
-        const mailingCityCol = pickColumn(cols, ["mailing_city", "Mailing City"]);
-        const mailingStateCol = pickColumn(cols, ["mailing_state", "Mailing State"]);
-        const propertyZipCol = pickColumn(cols, ["property_zip", "Property Zip Code"]);
-        const propertyCityCol = pickColumn(cols, ["property_city", "Property City"]);
-        const propertyStateCol = pickColumn(cols, ["property_state", "Property State"]);
-        const parcelStateCol = pickColumn(cols, ["parcel", "Parcel"]);
+        const botId = job.startedByBotId === 5 ? 5 : 4;
+        const firstNameCol = pickColumn(cols, ["first_name", "First Name", "Owner First Name"], botId);
+        const lastNameCol = pickColumn(cols, ["last_name", "Last Name", "Owner Last Name"], botId);
+        const mailingAddressCol = pickColumn(cols, ["mailing_address", "Mailing Address"], botId);
+        const propertyAddressCol = pickColumn(cols, ["property_address", "Property Address"], botId);
+        const mailingZipCol = pickColumn(cols, ["mailing_zip", "Mailing Zip Code"], botId);
+        const mailingCityCol = pickColumn(cols, ["mailing_city", "Mailing City"], botId);
+        const mailingStateCol = pickColumn(cols, ["mailing_state", "Mailing State"], botId);
+        const propertyZipCol = pickColumn(cols, ["property_zip", "Property Zip Code"], botId);
+        const propertyCityCol = pickColumn(cols, ["property_city", "Property City"], botId);
+        const propertyStateCol = pickColumn(cols, ["property_state", "Property State"], botId);
+        const parcelStateCol = pickColumn(cols, ["parcel", "Parcel"], botId);
 
         if (!firstNameCol && !lastNameCol && !mailingAddressCol) {
           console.warn(`Missing required identity columns in ${fileName}. Skipping.`);
@@ -282,8 +380,25 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             isPropertyClean = false;
           }
 
-          let propertyData: Record<string, any> = { prevList: [], currList: [], clean: isPropertyClean };
-          let ownerData: Record<string, any> = {
+          // Build row record for list generation
+          const rowRecord = buildRowRecord(cols, row, job.startedByBotId!);
+
+          // Extract property and owner data
+          const { propertyData: extractedPropertyData, ownerData: extractedOwnerData, lastSaleDate } =
+            extractPropertyAndOwnerData(cols, row, rowRecord, job.startedByBotId!, mongoToPropertyDetailsMap);
+
+          // Build complete property and owner data objects
+          const propertyData: Record<string, any> = {
+            ...extractedPropertyData,
+            prevList: [],
+            currList: [],
+            clean: isPropertyClean,
+            last_sale_date: lastSaleDate,
+            isListChanged: false,
+          };
+
+          const ownerData: Record<string, any> = {
+            ...extractedOwnerData,
             propertyIds: [],
             clean: isOwnerClean,
             inPostgres: existingOwnerMap.get(ownerIdentityKey) ?? false,
@@ -291,54 +406,22 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             botId: job.startedByBotId,
           };
 
-          let lastSaleDate: Date | null = null;
-          cols.forEach((col, idx) => {
-            const value = row[idx];
+          // Generate and set lists
+          const generatedLists = generateList(job.startedByBotId!, rowRecord);
+          const listNames = generatedLists
+            ? generatedLists.split(",").map((s: string) => s.trim()).filter((s: string) => s.length > 0)
+            : [];
 
-            const normalizedCol = col
-              .trim()
-              .replace(/^"|"$/g, "")
-              .toLowerCase()
-              .replace(/[\s\/\-\.]+/g, "_")
-              .replace(/[^a-z0-9_]/g, "")
-              .replace(/_+/g, "_")
-              .replace(/^_|_$/g, "");
-
-            if (normalizedCol === "list" || normalizedCol === "lists") {
-              const listNames =
-                value === null || value === undefined || String(value).trim() === ""
-                  ? []
-                  : String(value)
-                      .split(",")
-                      .map((s: string) => s.trim())
-                      .filter((s: string) => s.length > 0);
-
-              propertyData.currList = listNames.map((name: string) => ({
-                name: name,
-                list_updated_at: job.updatedAt,
-              }));
-            }
-
-            if (normalizedCol === "last_sale_date" || normalizedCol === "last_sold") {
-              if (value) {
-                const parsed = parse(String(value).trim(), "MMM-dd-yyyy", new Date());
-                lastSaleDate = isValid(parsed) ? parsed : null;
-              }
-            }
-
-            if (normalizedCol in mongoToPropertyDetailsMap) {
-              propertyData[mongoToPropertyDetailsMap[normalizedCol]] = value;
-            } else {
-              ownerData[normalizedCol] = value;
-            }
-          });
+          propertyData.currList = listNames.map((name: string) => ({
+            name: name,
+            list_updated_at: job.updatedAt,
+          }));
 
           if (existingPropertyMap.has(propertyIdentityKey)) {
             propertyData.prevList = existingPropertyMap.get(propertyIdentityKey)?.currList;
           }
 
-          propertyData.last_sale_date = lastSaleDate;
-          propertyData.isListChanged = false;
+          // Check if lists changed
           const prevNames = new Set(
             propertyData.prevList.map((item: any) => (typeof item === "string" ? item : item.name)),
           );
@@ -356,68 +439,29 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           }
 
           updatedPropertyMap.set(propertyIdentityKey, propertyData);
-          // updatedOwnerMap.set(ownerIdentityKey, ownerData);
-          updatedOwnerMap.set(ownerIdentityKey, {
-            ...ownerData,
-            inPostgres: ownerData.inPostgres,
-            clean: ownerData.clean,
-            treasurer_code: ownerData.treasurer_code,
-            delinquent_contract: ownerData.delinquent_contract,
-            owner_2_first_name: ownerData.owner_2_first_name,
-            owner_2_last_name: ownerData.owner_2_last_name,
-          });
+          updatedOwnerMap.set(ownerIdentityKey, ownerData);
         }
 
-        const bulkOps = Array.from(updatedPropertyMap.entries()).map(([identityKey, data]) => ({
-          updateOne: {
-            filter: { identityKey },
-            update: {
-              $set: {
-                ...data,
-                updatedAt: job.updatedAt,
-                syncedAt: new Date(),
-              },
-              $setOnInsert: {
-                identityKey,
-                createdAt: job.createdAt,
-              },
-            },
-            upsert: true,
-          },
-        }));
+        // Bulk upsert properties
+        await bulkUpsertProperties(updatedPropertyMap, job);
 
-        let result = {} as any;
-        if (bulkOps.length > 0) {
-          result = await PropertyData.bulkWrite(bulkOps, {
-            ordered: false, // continues even if one op fails
-          });
-
-          console.log("Bulk upsert result:", {
-            inserted: result.upsertedCount,
-            modified: result.modifiedCount,
-            matched: result.matchedCount,
-          });
-        }
+        // Resolve property IDs for owners
         const extractedPropertyIdentityKeys = Array.from(updatedPropertyMap.keys());
-
         const properties = await PropertyData.find(
           { identityKey: { $in: extractedPropertyIdentityKeys } },
           { _id: 1, identityKey: 1 },
         ).lean();
 
-        // Create a map of identityKey -> _id
-        // Ensure we handle potential duplicate identityKeys in the DB by taking the last one (or handle as needed)
         const insertedMap: Record<string, any> = {};
         properties.forEach((p) => {
           insertedMap[p.identityKey] = p._id;
         });
 
         console.log(`Resolved ${Object.keys(insertedMap).length} property IDs.`);
-        console.log("before", ownerIdentityKeyToPropertyMap);
 
+        // Map property identity keys to property IDs
         for (const [key, values] of ownerIdentityKeyToPropertyMap) {
-          const validPropertyIds = values.map((value) => insertedMap[value]).filter((id) => id); // Remove undefined/null values
-
+          const validPropertyIds = values.map((value) => insertedMap[value]).filter((id) => id);
           ownerIdentityKeyToPropertyMap.set(key, validPropertyIds);
 
           if (ownerIdentityKeyToPropertyMap.get(key)?.length === 0 && values.length > 0) {
@@ -425,115 +469,8 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           }
         }
 
-        const identityKeys = Array.from(updatedOwnerMap.keys());
-        const existingOwners = await Owner.find({ identityKey: { $in: identityKeys } }, { identityKey: 1 }).lean();
-        console.log("existingOwners", existingOwners);
-        const existingKeySet = new Set(existingOwners.map((o) => o.identityKey));
-
-        const updateOps = [];
-
-        const toMongooseObjectIds = (ids: any[]) =>
-          ids.filter(Boolean).map((id) => {
-            if (id instanceof mongoose.Types.ObjectId) {
-              return id; // already correct
-            }
-            return new mongoose.Types.ObjectId(id);
-          });
-
-        for (const [identityKey, data] of updatedOwnerMap.entries()) {
-          if (!existingKeySet.has(identityKey)) continue;
-
-          const rawPropertyIds = ownerIdentityKeyToPropertyMap.get(identityKey) ?? [];
-          const propertyIds = toMongooseObjectIds(rawPropertyIds);
-
-          const softSafeData = { ...data };
-          delete softSafeData._id;
-          delete softSafeData.identityKey;
-          delete softSafeData.propertyIds;
-          delete softSafeData.createdAt;
-          delete softSafeData.updatedAt;
-          delete softSafeData.__v;
-
-          const safeData = {
-            ...softSafeData, // ← convenience
-            inPostgres: Boolean(data.inPostgres),
-            clean: Boolean(data.clean),
-            treasurer_code: data.treasurer_code ?? null,
-            delinquent_contract: data.delinquent_contract ?? null,
-            ...(data.owner_2_first_name !== undefined && {
-              owner_2_first_name: data.owner_2_first_name,
-            }),
-            ...(data.owner_2_last_name !== undefined && {
-              owner_2_last_name: data.owner_2_last_name,
-            }),
-          };
-
-          const update: any = {
-            $set: {
-              ...safeData,
-              updatedAt: job.updatedAt,
-              syncedAt: new Date(),
-            },
-          };
-
-          if (propertyIds.length > 0) {
-            update.$addToSet = {
-              propertyIds: { $each: propertyIds },
-            };
-          }
-
-          updateOps.push({
-            updateOne: {
-              filter: { identityKey },
-              update,
-            },
-          });
-        }
-
-        const newOwners = [];
-
-        for (const [identityKey, data] of updatedOwnerMap.entries()) {
-          if (existingKeySet.has(identityKey)) continue;
-          const propertyIds = ownerIdentityKeyToPropertyMap.get(identityKey) ?? [];
-          newOwners.push({
-            identityKey,
-            ...data,
-            propertyIds,
-            createdAt: job.createdAt,
-            updatedAt: job.updatedAt,
-            syncedAt: new Date(),
-          });
-        }
-
-        if (updateOps.length > 0) {
-          const res = await Owner.bulkWrite(updateOps, { ordered: false });
-
-          res.mongoose?.results?.forEach((result: any, index: number) => {
-            if (!result) return;
-
-            console.error(`\n❌ Error in updateOps[${index}]`);
-
-            console.error("name:", result.name);
-            console.error("message:", result.message);
-
-            if (result.path) {
-              console.error("path:", result.path);
-            }
-
-            if (result.value !== undefined) {
-              console.error("value:", result.value);
-            }
-
-            if (result.reason) {
-              console.error("reason:", result.reason?.message);
-            }
-          });
-        }
-
-        if (newOwners.length > 0) {
-          console.log("newOwners", newOwners);
-          await Owner.insertMany(newOwners, { ordered: false });
-        }
+        // Bulk update/insert owners
+        await bulkUpdateOwners(updatedOwnerMap, ownerIdentityKeyToPropertyMap, job);
 
         console.log(`Synced identities for job ${job.jobId}`);
       } catch (err) {
@@ -545,3 +482,207 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
     console.error("Error in syncScrappedDataOptimized:", error);
   }
 };
+
+
+// ========== LIST GENERATION FUNCTIONS ==========
+
+function parseNumeric(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return value;
+  // Remove $, commas, and other non-numeric characters except decimal point and minus sign
+  const cleaned = String(value).replace(/[$,\s]/g, "");
+  const parsed = parseFloat(cleaned);
+  return isNaN(parsed) ? null : parsed;
+}
+
+function generateList(startedByBotId: number, record: any): string {
+  if (!BOTMAP[startedByBotId] || !BOTMAP[startedByBotId]?.flow) return "";
+  const lists = BOTMAP[startedByBotId].flow
+    .map(botId => filterList(botId, record))
+    .filter(list => list.trim());
+  return lists.join(", ")
+}
+
+function filterList(botId: number, record: any): string {
+  const lists: string[] = [];
+
+  if (botId === 1) {
+    const waterUsage = parseNumeric(record[`bot_${botId}_water_usage_current_month`]);
+    const lastBilledAmount = parseNumeric(record[`bot_${botId}_last_billed_amount`]);
+
+    if (waterUsage !== null && lastBilledAmount !== null && waterUsage === 0 && lastBilledAmount === 0) {
+      lists.push("Akron Water Shutoff")
+    }
+
+    if (waterUsage !== null && waterUsage === 0) {
+      lists.push("Akron Delinquent Water Bill")
+    }
+  } else if (botId === 2) {
+    lists.push("Foreclosure")
+  } else if (botId === 3) {
+    lists.push("Notice of Default")
+  } else if (botId === 4 || botId === 5) {
+    const delinquentContract = record[`bot_${botId}_delinquent_contract`]?.trim?.();
+    const taxDelinquentAmount = parseNumeric(record[`bot_${botId}_tax_delinquent_amount`]);
+    const payDelinquentTaxes = parseNumeric(record[`bot_${botId}_pay_delinquent_taxes`]);
+
+    if (delinquentContract || (taxDelinquentAmount !== null && taxDelinquentAmount >= 300) || (payDelinquentTaxes !== null && payDelinquentTaxes >= 300)) {
+      lists.push("Tax Delinquent");
+    }
+
+    const taxLien = record[`bot_${botId}_tax_lien`]?.trim?.().toLowerCase();
+    if (taxLien && ["foreclosure", "tax"].includes(taxLien)) {
+      lists.push("Tax Lien");
+    }
+
+    const vacantAbandon = record[`bot_${botId}_vacant_abandon`]?.trim?.().toLowerCase();
+    if (vacantAbandon === "v") {
+      lists.push("Vacant");
+    }
+
+    if (vacantAbandon === "a") {
+      lists.push("Abandoned");
+    }
+
+    // Check for Special Assessments with special codes
+    const hasSpecialAssessment = Object.keys(record)
+      .filter(key => key.startsWith(`bot_${botId}_special_assessment_amount`))
+      .some(key => {
+        const value = String(record[key] ?? "").trim();
+        return value && Array.from(SUMMITOH_SPECIAL_CODES).some(code => value.includes(code));
+      });
+
+    if (hasSpecialAssessment) {
+      lists.push("Special Assessment");
+    }
+  }
+
+  return lists.join(", ");
+}
+
+// ========== BULK OPERATION HELPERS ==========
+
+async function bulkUpsertProperties(
+  updatedPropertyMap: Map<string, any>,
+  job: any
+): Promise<any> {
+  const bulkOps = Array.from(updatedPropertyMap.entries()).map(([identityKey, data]) => ({
+    updateOne: {
+      filter: { identityKey },
+      update: {
+        $set: {
+          ...data,
+          updatedAt: job.updatedAt,
+          syncedAt: new Date(),
+        },
+        $setOnInsert: {
+          identityKey,
+          createdAt: job.createdAt,
+        },
+      },
+      upsert: true,
+    },
+  }));
+
+  if (bulkOps.length === 0) return {};
+
+  const result = await PropertyData.bulkWrite(bulkOps, { ordered: false });
+  console.log("Bulk upsert result:", {
+    inserted: result.upsertedCount,
+    modified: result.modifiedCount,
+    matched: result.matchedCount,
+  });
+
+  return result;
+}
+
+async function bulkUpdateOwners(
+  updatedOwnerMap: Map<string, any>,
+  ownerIdentityKeyToPropertyMap: Map<string, any[]>,
+  job: any
+): Promise<void> {
+  const identityKeys = Array.from(updatedOwnerMap.keys());
+  const existingOwners = await Owner.find({ identityKey: { $in: identityKeys } }, { identityKey: 1 }).lean();
+  const existingKeySet = new Set(existingOwners.map((o) => o.identityKey));
+
+  const toMongooseObjectIds = (ids: any[]) =>
+    ids.filter(Boolean).map((id) => {
+      if (id instanceof mongoose.Types.ObjectId) return id;
+      return new mongoose.Types.ObjectId(id);
+    });
+
+  // Update existing owners
+  const updateOps = [];
+  for (const [identityKey, data] of updatedOwnerMap.entries()) {
+    if (!existingKeySet.has(identityKey)) continue;
+
+    const rawPropertyIds = ownerIdentityKeyToPropertyMap.get(identityKey) ?? [];
+    const propertyIds = toMongooseObjectIds(rawPropertyIds);
+
+    const softSafeData = { ...data };
+    delete softSafeData._id;
+    delete softSafeData.identityKey;
+    delete softSafeData.propertyIds;
+    delete softSafeData.createdAt;
+    delete softSafeData.updatedAt;
+    delete softSafeData.__v;
+
+    const safeData = {
+      ...softSafeData,
+      inPostgres: Boolean(data.inPostgres),
+      clean: Boolean(data.clean),
+      treasurer_code: data.treasurer_code ?? null,
+      delinquent_contract: data.delinquent_contract ?? null,
+      ...(data.owner_2_first_name !== undefined && { owner_2_first_name: data.owner_2_first_name }),
+      ...(data.owner_2_last_name !== undefined && { owner_2_last_name: data.owner_2_last_name }),
+    };
+
+    const update: any = {
+      $set: {
+        ...safeData,
+        updatedAt: job.updatedAt,
+        syncedAt: new Date(),
+      },
+    };
+
+    if (propertyIds.length > 0) {
+      update.$addToSet = { propertyIds: { $each: propertyIds } };
+    }
+
+    updateOps.push({ updateOne: { filter: { identityKey }, update } });
+  }
+
+  if (updateOps.length > 0) {
+    const res = await Owner.bulkWrite(updateOps, { ordered: false });
+    res.mongoose?.results?.forEach((result: any, index: number) => {
+      if (!result) return;
+      console.error(`\n❌ Error in updateOps[${index}]`, {
+        name: result.name,
+        message: result.message,
+        path: result.path,
+        value: result.value,
+        reason: result.reason?.message,
+      });
+    });
+  }
+
+  // Insert new owners
+  const newOwners = [];
+  for (const [identityKey, data] of updatedOwnerMap.entries()) {
+    if (existingKeySet.has(identityKey)) continue;
+    const propertyIds = ownerIdentityKeyToPropertyMap.get(identityKey) ?? [];
+    newOwners.push({
+      identityKey,
+      ...data,
+      propertyIds,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      syncedAt: new Date(),
+    });
+  }
+
+  if (newOwners.length > 0) {
+    console.log("newOwners", newOwners);
+    await Owner.insertMany(newOwners, { ordered: false });
+  }
+}
