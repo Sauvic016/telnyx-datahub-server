@@ -70,6 +70,7 @@ const PropertyDataSchema = new mongoose.Schema(
     special_assessments_code_2023: String,
     special_assessments_code_2024: String,
     special_assessments_code_2025: String,
+    special_assessments_code_2026: String,
 
     syncedAt: Date,
   },

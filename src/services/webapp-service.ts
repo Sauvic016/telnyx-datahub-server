@@ -2,6 +2,7 @@ import pd from "nodejs-polars";
 import path, { dirname } from "path";
 import prisma from "../db";
 import { fileExists } from "../utils/helper";
+import { BOTMAP } from "../utils/constants";
 
 export const sendRecordForJob = async (jobId: string): Promise<Record<string, unknown>[]> => {
   const job = await prisma.botJobs.findFirst({
@@ -25,10 +26,24 @@ export const sendRecordForJob = async (jobId: string): Promise<Record<string, un
     const columns = df.columns;
     const rowsArray = df.rows(); // array of arrays
 
+    // Remove bot_{botId}_ prefix from column names based on bot flow
+    const botConfig = job.startedByBotId ? BOTMAP[job.startedByBotId] : null;
+    const botFlow = botConfig?.flow ?? [job.startedByBotId];
+
+    const cleanedColumns = columns.map((col) => {
+      for (const botId of botFlow) {
+        const prefix = `bot_${botId}_`;
+        if (col.startsWith(prefix)) {
+          return col.slice(prefix.length);
+        }
+      }
+      return col;
+    });
+
     const rows = rowsArray.map((row) => {
       const obj: Record<string, unknown> = {};
       row.forEach((value, idx) => {
-        obj[columns[idx]] = value;
+        obj[cleanedColumns[idx]] = value;
       });
       return obj;
     });

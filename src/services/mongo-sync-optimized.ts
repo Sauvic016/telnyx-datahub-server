@@ -123,6 +123,7 @@ const mongoToPropertyDetailsMap: Record<string, string> = {
   special_assessments_code_2023: "special_assessments_code_2023",
   special_assessments_code_2024: "special_assessments_code_2024",
   special_assessments_code_2025: "special_assessments_code_2025",
+  special_assessments_code_2026: "special_assessments_code_2026",
 };
 
 // ========== HELPER FUNCTIONS ==========
