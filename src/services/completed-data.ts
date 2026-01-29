@@ -101,14 +101,37 @@ export const getCompletedDataForContactId = async (contactId: string) => {
   return formatContactData(contact);
 };
 
+function matchesActivityFilter(activity: Activity, filter: { smsSent?: boolean; smsDelivered?: boolean }): boolean {
+  // Case 1: user filters by smsDelivered
+  if (filter.smsDelivered === true) {
+    return activity.smsDelivered === true;
+  }
+
+  if (filter.smsDelivered === false) {
+    return activity.smsDelivered === false;
+  }
+
+  // Case 2: user filters by smsSent (and did not specify delivered)
+  if (filter.smsSent === true) {
+    return activity.smsSent === true;
+  }
+
+  if (filter.smsSent === false) {
+    return activity.smsSent === false;
+  }
+
+  // No activity filter
+  return true;
+}
+
 interface DateRangeFilter {
   type?: string;
   startDate?: string;
   endDate?: string;
 }
-interface IActivity {
-  smsSent?: "yes" | "no";
-  smsDelivered?: "yes" | "no";
+export interface Activity {
+  smsSent: boolean;
+  smsDelivered: boolean;
 }
 
 export interface CompletedRecordsFilters {
@@ -117,7 +140,7 @@ export interface CompletedRecordsFilters {
   dateRange?: DateRangeFilter;
   sortBy?: "updatedAt" | "lastSold";
   sortOrder?: "asc" | "desc";
-  activity?: IActivity;
+  activity?: Partial<Activity>;
 }
 
 interface PaginationParams {
@@ -197,138 +220,6 @@ export const fetchCompletedRecords = async (
     });
   }
 
-  // Activity filter using contact_phones.phone_number matched against outbound_messages.receiver_phone
-  if (filters?.activity) {
-    const activitySubqueries: string[] = [];
-
-    // Build subquery for SMS sent
-    if (filters.activity.smsSent === "yes") {
-      activitySubqueries.push(`
-        c.id IN (
-          SELECT DISTINCT cp.contact_id
-          FROM contact_phones cp
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-
-          UNION
-
-          SELECT DISTINCT cr."fromContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-
-          UNION
-
-          SELECT DISTINCT cr."toContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-        )
-      `);
-    } else if (filters.activity.smsSent === "no") {
-      activitySubqueries.push(`
-        c.id NOT IN (
-          SELECT DISTINCT cp.contact_id
-          FROM contact_phones cp
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-
-          UNION
-
-          SELECT DISTINCT cr."fromContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-
-          UNION
-
-          SELECT DISTINCT cr."toContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-        )
-      `);
-    }
-
-    // Build subquery for SMS delivered
-    if (filters.activity.smsDelivered === "yes") {
-      activitySubqueries.push(`
-        c.id IN (
-          SELECT DISTINCT cp.contact_id
-          FROM contact_phones cp
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-          WHERE om.status = 'delivered'
-
-          UNION
-
-          SELECT DISTINCT cr."fromContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-          WHERE om.status = 'delivered'
-
-          UNION
-
-          SELECT DISTINCT cr."toContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-          WHERE om.status = 'delivered'
-        )
-      `);
-    } else if (filters.activity.smsDelivered === "no") {
-      activitySubqueries.push(`
-        c.id NOT IN (
-          SELECT DISTINCT cp.contact_id
-          FROM contact_phones cp
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-          WHERE om.status = 'delivered'
-
-          UNION
-
-          SELECT DISTINCT cr."fromContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."toContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-          WHERE om.status = 'delivered'
-
-          UNION
-
-          SELECT DISTINCT cr."toContactId" as contact_id
-          FROM "ContactRelation" cr
-          JOIN contact_phones cp ON cp.contact_id = cr."fromContactId"
-          JOIN outbound_messages om ON LOWER(om.receiver_phone) = LOWER(cp.phone_number)
-          WHERE om.status = 'delivered'
-        )
-      `);
-    }
-
-    // Fetch matching contact IDs using raw SQL
-    if (activitySubqueries.length > 0) {
-      const combinedSubquery = activitySubqueries.join(" AND ");
-      const rawQuery = `
-        SELECT DISTINCT p."contactId"
-        FROM "Pipeline" p
-        JOIN contacts c ON c.id = p."contactId"
-        WHERE ${combinedSubquery}
-      `;
-
-      const matchingContacts = await prisma.$queryRawUnsafe<{ contactId: string }[]>(rawQuery);
-
-      const contactIds = matchingContacts.map((row) => row.contactId);
-
-      // Add contact ID filter to main query
-      if (contactIds.length > 0) {
-        andConditions.push({
-          contactId: { in: contactIds },
-        });
-      } else {
-        // No matching contacts, return empty result
-        andConditions.push({
-          contactId: { in: [] },
-        });
-      }
-    }
-  }
-
   if (searchQuery) {
     // Search query filter
     const searchTerm = searchQuery.trim();
@@ -368,6 +259,12 @@ export const fetchCompletedRecords = async (
       ],
     });
   }
+  // if (filters?.activity) {
+  //   const { smsSent, smsDelivered } = filters.activity;
+
+  //   if (smsDelivered) {
+  //   }
+  // }
 
   // Combine all conditions
   const where: Prisma.PipelineWhereInput = {
@@ -382,32 +279,14 @@ export const fetchCompletedRecords = async (
     contacts: {
       include: {
         directskips: true,
-        contact_phones: {
-          where: { telynxLookupId: { not: null } },
-          include: { telynxLookup: true },
-        },
+        contact_phones: true,
         relationsFrom: {
           include: {
             toContact: {
               select: {
                 first_name: true,
                 last_name: true,
-                contact_phones: {
-                  include: { telynxLookup: true },
-                },
-              },
-            },
-          },
-        },
-        relationsTo: {
-          include: {
-            fromContact: {
-              select: {
-                first_name: true,
-                last_name: true,
-                contact_phones: {
-                  include: { telynxLookup: true },
-                },
+                contact_phones: true,
               },
             },
           },
@@ -427,13 +306,132 @@ export const fetchCompletedRecords = async (
     prisma.pipeline.findMany({
       where,
       orderBy,
-      skip: pagination?.skip,
-      take: pagination?.take,
+      // skip: pagination?.skip,
+      // take: pagination?.take,
       include,
     }),
     prisma.pipeline.count({ where }),
   ]);
 
-  const updatedRows = await formatRowData(rows);
-  return { rows: updatedRows, total };
+  let updatedRows: any = rows;
+  const phoneNumbersMap = rows.map((row) => getPropIdPhoneNumbers(row));
+  const matchedPropertyId = await findContactsWithMatchingOutboundMessages(phoneNumbersMap);
+
+  updatedRows = updatedRows.map((row: any) => {
+    const propertyDetailsId = row.propertyDetailsId!;
+    if (Object.keys(matchedPropertyId).includes(propertyDetailsId)) {
+      if (matchedPropertyId[propertyDetailsId].status === "delivered") {
+        return { ...row, ["contacts"]: { ...row.contacts, smsSent: true, smsDelivered: true } };
+      } else {
+        return { ...row, ["contacts"]: { ...row.contacts, smsSent: true, smsDelivered: false } };
+      }
+    }
+    return { ...row, ["contacts"]: { ...row.contacts, smsSent: false, smsDelivered: false } };
+  });
+
+  if (filters?.activity) {
+    const { smsSent, smsDelivered } = filters.activity;
+
+    console.log("Filter values:", {
+      smsSent,
+      smsDelivered,
+      typeOfSmsSent: typeof smsSent,
+      typeofSmsDelivered: typeof smsDelivered,
+    });
+
+    // console.log(
+    //   "All rows smsSent values:",
+    //   updatedRows.map((row: any) => ({
+    //     propertyDetailsId: row.propertyDetailsId,
+    //     smsSent: row.contacts.smsSent,
+    //     smsDelivered: row.contacts.smsDelivered,
+    //   })),
+    // );
+    // console.log("Before filter count:", updatedRows.length);
+
+    updatedRows = updatedRows.filter((row: any) => {
+      if (smsDelivered !== undefined && row.contacts.smsDelivered !== smsDelivered) {
+        return false;
+      }
+      if (smsSent !== undefined && row.contacts.smsSent !== smsSent) {
+        return false;
+      }
+      return true;
+    });
+
+    // console.log("After filter count:", updatedRows.length);
+    // console.log(
+    //   "Filtered rows:",
+    //   updatedRows.map((r: any) => ({
+    //     id: r.propertyDetailsId,
+    //     smsSent: r.contacts.smsSent,
+    //     smsDelivered: r.contacts.smsDelivered,
+    //   })),
+    // );
+  }
+  updatedRows = await formatRowData(updatedRows);
+
+  const start = pagination?.skip ?? 0;
+  const end = start + (pagination?.take ?? updatedRows.length);
+  const paginatedRows = updatedRows.slice(start, end);
+
+  return { rows: paginatedRows, total: updatedRows.length };
 };
+
+async function findContactsWithMatchingOutboundMessages(
+  phoneNumbersMap: Record<string, { property_address: string; phones: string[] }>[],
+): Promise<Record<string, { status: string }>> {
+  const matched: Record<string, { status: string }> = {};
+
+  for (const entry of phoneNumbersMap) {
+    const propertyId = Object.keys(entry)[0];
+    const { property_address, phones } = entry[propertyId];
+
+    // Skip if no phones or no property address
+    if (!phones.length || !property_address) continue;
+
+    const matchingMessages = await prisma.outbound_messages.findFirst({
+      where: {
+        receiver_phone: { in: phones },
+        text: { contains: property_address, mode: "insensitive" },
+      },
+      select: { id: true, status: true },
+    });
+
+    if (matchingMessages) {
+      matched[propertyId] = { status: matchingMessages.status! };
+    }
+  }
+
+  return matched;
+}
+
+function getPropIdPhoneNumbers(data: any): Record<string, any> {
+  const propId = data.propertyDetailsId;
+  const phoneSet = new Set<string>();
+
+  // Add main contact's phone numbers
+  for (const phone of data.contacts.contact_phones) {
+    if (phone.phone_number) {
+      phoneSet.add(phone.phone_number);
+    }
+  }
+
+  // Add relatives' phone numbers from relationsFrom
+  for (const relation of data.contacts.relationsFrom) {
+    // Skip self-referential relations
+
+    for (const phone of relation.toContact.contact_phones) {
+      if (phone.phone_number) {
+        phoneSet.add(phone.phone_number);
+      }
+    }
+  }
+
+  return {
+    [propId]: {
+      property_address: data?.propertyDetails?.property_address?.toLowerCase(),
+      phones: Array.from(phoneSet),
+    },
+  };
+}

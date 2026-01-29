@@ -53,12 +53,23 @@ router.get("/", async (req, res) => {
       filters.sortOrder = sortOrder;
     }
 
-    const activityType = req.query.activityType as string | undefined;
+    const ACTIVITY_KEYS = new Set(["smsSent", "smsDelivered"]);
+    function parseYesNo(value?: string): boolean | undefined {
+      if (value === "yes") return true;
+      if (value === "no") return false;
+      return undefined;
+    }
+    const activityType = req.query.activityType as "smsSent" | "smsDelivered" | undefined;
     const activityValue = req.query.activityValue as string | undefined;
-    if (activityType) {
-      filters.activity = {
-        [activityType]: activityValue,
-      };
+
+    if (activityType && ACTIVITY_KEYS.has(activityType)) {
+      const parsed = parseYesNo(activityValue);
+
+      if (parsed !== undefined) {
+        filters.activity = {
+          [activityType]: parsed,
+        };
+      }
     }
 
     const searchQuery = req.query.search as string | undefined;
