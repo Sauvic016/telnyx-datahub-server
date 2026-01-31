@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { randomUUID } from "crypto";
 import { CompletedRecordsFilters, fetchCompletedRecords } from "../services/completed-data";
 import { getValidParam } from "../utils/query-params";
+import { parseAmPmTime, isInTimeSlot } from "../utils/helper";
 import prisma from "../db";
 
 const router = Router();
@@ -392,4 +394,452 @@ router.patch("/update-address", async (req, res) => {
     return;
   }
 });
+
+
+// ==================== SMS Drip Types ====================
+
+interface SmsDripMessage {
+  sequence: number;
+  delay_unit?: "sec" | "min" | "hr" | "day" | "week";
+  delay_seconds?: number;
+  wait_between_sends_sec?: number;
+  template_ids?: string[];
+}
+
+interface SmsDripTimeSlot {
+  start: string;
+  end: string;
+}
+
+interface SmsDripTarget {
+  contactId: string;
+  propertyId?: string;
+}
+
+// Parse "contactId-propertyId" string format from frontend
+function parseTargetString(targetStr: string): SmsDripTarget {
+  const [contactId, propertyId] = targetStr.split("_");
+  return { contactId, propertyId };
+}
+
+function parseTargets(targets: string[]): SmsDripTarget[] {
+  return targets.map(parseTargetString).filter(t => t.contactId);
+}
+
+interface PhoneFilter {
+  selectedTags?: string[];
+  selectedCallerIds?: string[];
+  selectedPhoneIndex?: number[];
+}
+
+interface ContactFilter {
+  listName?: string;
+  propertyStatusId?: string;
+  filterDateType?: string;  // "today", "yesterday", "this_week", "last_week", "this_month", "last_month", "custom"
+  startDate?: string;
+  endDate?: string;
+  sortBy?: "updatedAt" | "lastSold";
+  sortOrder?: "asc" | "desc";
+  activityType?: "smsSent" | "smsDelivered";
+  activityValue?: "yes" | "no";
+  search?: string;
+}
+
+interface SmsDripFilters {
+  phoneFilters?: PhoneFilter;
+  contactFilter?: ContactFilter;
+}
+
+interface SmsDripRequestBody {
+  name: string;
+  telnyxNumberIds?: string[];
+  notes?: string;
+  jobType?: string;
+  scheduleDate?: string;
+  schedule?: boolean;
+  messages: SmsDripMessage[];
+  timeSlots?: SmsDripTimeSlot[];
+  targetIds?: string[]; // "contactId_propertyId" format
+  filters?: SmsDripFilters;
+}
+
+interface SmsDripBulkRequestBody {
+  name: string;
+  telnyxNumberIds?: string[];
+  notes?: string;
+  jobType?: string;
+  scheduleDate?: string;
+  schedule?: boolean;
+  messages: SmsDripMessage[];
+  timeSlots?: SmsDripTimeSlot[];
+  limit: number;
+  startIndex?: number;
+  excludedIds?: string[]; // "contactId_propertyId" format to exclude
+  additionalIds?: string[]; // "contactId_propertyId" format to add (duplicates ignored)
+  filters?: SmsDripFilters;
+}
+
+// ==================== SMS Drip Helpers ====================
+
+const SECONDS_MAP: Record<string, number> = {
+  sec: 1,
+  min: 60,
+  hr: 3600,
+  day: 86400,
+  week: 604800
+};
+
+async function fetchTelnyxNumbers(ids: string[]) {
+  if (ids.length === 0) return [];
+  return prisma.telnyx_numbers.findMany({
+    where: { id: { in: ids } },
+    select: { id: true }
+  });
+}
+
+function parseScheduleDate(scheduleDate?: string): Date | null {
+  if (!scheduleDate) return null;
+  return new Date(scheduleDate.split("T")[0]);
+}
+
+function parseTimeSlots(timeSlots: SmsDripTimeSlot[]) {
+  return timeSlots.map(slot => ({
+    startTime: parseAmPmTime(slot.start),
+    endTime: parseAmPmTime(slot.end)
+  }));
+}
+
+async function createJob(params: {
+  jobId: string;
+  name: string;
+  notes: string;
+  jobType: string;
+  startTime: Date | null;
+  initialStatus: string;
+  telnyxNumbers: { id: string }[];
+  parsedTimeSlots: { startTime: Date; endTime: Date }[];
+}) {
+  await prisma.jobs.create({
+    data: {
+      id: params.jobId,
+      user_id: "1", // TODO: Get from auth
+      name: params.name,
+      notes: params.notes,
+      job_type: params.jobType,
+      start_time: params.startTime,
+      status: params.initialStatus as any,
+      created_at: new Date(),
+      job_telnyx_association: {
+        create: params.telnyxNumbers.map(tn => ({ telnyx_number_id: tn.id }))
+      },
+      job_time_slots: {
+        create: params.parsedTimeSlots.map(slot => ({
+          id: randomUUID(),
+          start_time: slot.startTime,
+          end_time: slot.endTime
+        }))
+      }
+    }
+  });
+}
+
+async function createJobMessages(jobId: string, messages: SmsDripMessage[]) {
+  for (const msg of messages) {
+    const delayUnit = msg.delay_unit || "sec";
+    const delaySeconds = (msg.delay_seconds || 0) * (SECONDS_MAP[delayUnit] || 1);
+    const templateIds = msg.template_ids || [];
+
+    await prisma.job_messages.create({
+      data: {
+        id: randomUUID(),
+        job_id: jobId,
+        sequence: msg.sequence,
+        delay_unit: delayUnit,
+        delay_seconds: delaySeconds,
+        wait_between_sends_sec: msg.wait_between_sends_sec || 5,
+        created_at: new Date(),
+        job_message_template_association: {
+          create: templateIds.map(templateId => ({ template_id: templateId }))
+        }
+      }
+    });
+  }
+}
+
+async function createJobTargets(
+  jobId: string,
+  targets: SmsDripTarget[],
+  phoneFilters?: PhoneFilter
+): Promise<{ targetsCreated: number; contactsWithoutMatchingPhones: number }> {
+  if (targets.length === 0) {
+    return { targetsCreated: 0, contactsWithoutMatchingPhones: 0 };
+  }
+
+  const contactIds = targets.map(t => t.contactId);
+
+  // Build phone query with filters
+  const phoneWhereClause: any = { contact_id: { in: contactIds } };
+
+  if (phoneFilters?.selectedTags?.length) {
+    phoneWhereClause.phone_tags = { in: phoneFilters.selectedTags };
+  }
+
+  if (phoneFilters?.selectedCallerIds?.length) {
+    phoneWhereClause.telynxLookup = { caller_id: { in: phoneFilters.selectedCallerIds } };
+  }
+
+  const contactPhones = await prisma.contact_phones.findMany({
+    where: phoneWhereClause,
+    select: { id: true, contact_id: true },
+    orderBy: { id: "asc" } // Consistent ordering for index selection
+  });
+
+
+  // Group phones by contact_id for index filtering
+  const phonesByContact = new Map<string, { id: string; contact_id: string }[]>();
+  for (const phone of contactPhones) {
+    if (!phone.contact_id) continue;
+    const existing = phonesByContact.get(phone.contact_id) || [];
+    existing.push(phone as { id: string; contact_id: string });
+    phonesByContact.set(phone.contact_id, existing);
+  }
+
+  // Apply selectedPhoneIndex filter if provided
+  let filteredPhones: { id: string; contact_id: string }[] = [];
+  if (phoneFilters?.selectedPhoneIndex?.length) {
+    const indexSet = new Set(phoneFilters.selectedPhoneIndex);
+    for (const [, phones] of phonesByContact) {
+      for (let i = 0; i < phones.length; i++) {
+        if (indexSet.has(i)) {
+          filteredPhones.push(phones[i]);
+        }
+      }
+    }
+  } else {
+    // No index filter, use all phones
+    filteredPhones = contactPhones.filter(p => p.contact_id !== null) as { id: string; contact_id: string }[];
+  }
+
+  // Map contactId -> propertyId
+  const propertyByContact = new Map(targets.map(t => [t.contactId, t.propertyId]));
+
+  // Create targets - one per matching phone
+  const jobTargetsData = filteredPhones.map(phone => ({
+    id: randomUUID(),
+    job_id: jobId,
+    contact_id: phone.contact_id,
+    phone_id: phone.id,
+    property_id: propertyByContact.get(phone.contact_id) || null,
+    status: "pending" as const,
+    last_sequence_sent: 0
+  }));
+
+  if (jobTargetsData.length > 0) {
+    await prisma.job_targets.createMany({ data: jobTargetsData });
+  }
+
+  const contactsWithPhones = new Set(filteredPhones.map(p => p.contact_id));
+  const contactsWithoutMatchingPhones = targets.filter(t => !contactsWithPhones.has(t.contactId)).length;
+
+  return { targetsCreated: jobTargetsData.length, contactsWithoutMatchingPhones };
+}
+
+async function finalizeJobStatus(
+  jobId: string,
+  parsedTimeSlots: { startTime: Date; endTime: Date }[]
+): Promise<{ inSlot: boolean }> {
+  const inSlot = isInTimeSlot(parsedTimeSlots);
+  const newStatus = (!inSlot && parsedTimeSlots.length > 0) ? "scheduled" : "processing";
+
+  await prisma.jobs.update({
+    where: { id: jobId },
+    data: { status: newStatus }
+  });
+
+  return { inSlot: inSlot || parsedTimeSlots.length === 0 };
+}
+
+// ==================== SMS Drip Routes ====================
+
+router.post("/sms-drip-bulk", async (req, res) => {
+  try {
+    const body: SmsDripBulkRequestBody = req.body;
+    const {
+      telnyxNumberIds = [],
+      notes = "",
+      jobType = "bulk",
+      scheduleDate,
+      schedule,
+      messages,
+      timeSlots = [],
+      limit,
+      startIndex = 0,
+      excludedIds = [],
+      additionalIds = [],
+      filters
+    } = body;
+
+    const { phoneFilters, contactFilter } = filters || {};
+
+    if (!body.name) {
+      return res.status(400).json({ error: "Job name is required" });
+    }
+    if (!messages?.length) {
+      return res.status(400).json({ error: "At least one message is required" });
+    }
+    if (!limit || limit <= 0) {
+      return res.status(400).json({ error: "Limit must be a positive number" });
+    }
+
+    // Validate phone filters - at least one filter must be provided
+    const hasPhoneFilter =
+      (phoneFilters?.selectedTags?.length ?? 0) > 0 ||
+      (phoneFilters?.selectedCallerIds?.length ?? 0) > 0 ||
+      (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
+
+    if (!hasPhoneFilter) {
+      return res.status(400).json({ error: "Please select at least one phone filter (tags, caller ID, or phone index)" });
+    }
+
+    // Build filters for fetchCompletedRecords from contactFilter
+    const recordFilters: CompletedRecordsFilters = {};
+    if (contactFilter?.listName) recordFilters.listName = contactFilter.listName;
+    if (contactFilter?.propertyStatusId) recordFilters.propertyStatusId = contactFilter.propertyStatusId;
+    if (contactFilter?.filterDateType || contactFilter?.startDate || contactFilter?.endDate) {
+      recordFilters.dateRange = {
+        type: contactFilter.filterDateType,
+        startDate: contactFilter.startDate,
+        endDate: contactFilter.endDate
+      };
+    }
+    if (contactFilter?.sortBy) recordFilters.sortBy = contactFilter.sortBy;
+    if (contactFilter?.sortOrder) recordFilters.sortOrder = contactFilter.sortOrder;
+    if (contactFilter?.activityType && contactFilter?.activityValue) {
+      const activityBool = contactFilter.activityValue === "yes";
+      recordFilters.activity = { [contactFilter.activityType]: activityBool };
+    }
+
+    // Fetch records using the same logic as GET /completed-data
+    const { rows } = await fetchCompletedRecords(recordFilters, { skip: startIndex, take: limit }, contactFilter?.search);
+
+    // Extract targets from fetched records
+    const excludedSet = new Set(excludedIds);
+    const seenIds = new Set<string>();
+
+    const targetsFromRecords: SmsDripTarget[] = rows
+      .map((row: any) => ({
+        contactId: row.contact?.id || row.contactId,
+        propertyId: row.propertyDetails?.id || row.propertyDetailsId
+      }))
+      .filter((t: SmsDripTarget) => t.contactId)
+      .filter((t: SmsDripTarget) => !excludedSet.has(`${t.contactId}_${t.propertyId}`));
+
+    // Track seen IDs from records
+    for (const t of targetsFromRecords) {
+      seenIds.add(`${t.contactId}_${t.propertyId}`);
+    }
+
+    // Parse and add additional targets (skip duplicates and excluded)
+    const additionalTargets = parseTargets(additionalIds)
+      .filter(t => !excludedSet.has(`${t.contactId}_${t.propertyId}`))
+      .filter(t => {
+        const key = `${t.contactId}_${t.propertyId}`;
+        if (seenIds.has(key)) return false;
+        seenIds.add(key);
+        return true;
+      });
+
+    const targets = [...targetsFromRecords, ...additionalTargets];
+
+    if (targets.length === 0) {
+      return res.status(400).json({ error: "No records found matching the filters" });
+    }
+
+    const jobId = randomUUID();
+    const telnyxNumbers = await fetchTelnyxNumbers(telnyxNumberIds);
+    const startTime = parseScheduleDate(scheduleDate);
+    const parsedTimeSlots = parseTimeSlots(timeSlots);
+    const initialStatus = schedule ? "scheduled" : "processing";
+
+    await createJob({ jobId, name: body.name, notes, jobType, startTime, initialStatus, telnyxNumbers, parsedTimeSlots });
+    await createJobMessages(jobId, messages);
+    const { targetsCreated, contactsWithoutMatchingPhones } = await createJobTargets(jobId, targets, phoneFilters);
+    const { inSlot } = await finalizeJobStatus(jobId, parsedTimeSlots);
+
+    return res.status(inSlot ? 201 : 200).json({
+      message: inSlot ? "Job created successfully" : "Job scheduled successfully, waiting for time slot.",
+      jobId,
+      targetsCreated,
+      recordsMatched: rows.length,
+      contactsWithoutMatchingPhones
+    });
+  } catch (error) {
+    console.error("Error creating SMS drip bulk job:", error);
+    return res.status(500).json({
+      error: "Failed to create SMS drip bulk job",
+      details: error instanceof Error ? error.message : "Unknown error"
+    });
+  }
+});
+
+router.post("/sms-drip-manual", async (req, res) => {
+  try {
+    const body: SmsDripRequestBody & { targetIds: string[] } = req.body;
+    const { telnyxNumberIds = [], notes = "", jobType = "bulk", scheduleDate, schedule, messages, timeSlots = [], targetIds, filters } = body;
+
+    const { phoneFilters } = filters || {};
+
+    if (!body.name) {
+      return res.status(400).json({ error: "Job name is required" });
+    }
+    if (!messages?.length) {
+      return res.status(400).json({ error: "At least one message is required" });
+    }
+    if (!targetIds?.length) {
+      return res.status(400).json({ error: "At least one target is required" });
+    }
+
+    // Validate phone filters - at least one filter must be provided
+    const hasPhoneFilter =
+      (phoneFilters?.selectedTags?.length ?? 0) > 0 ||
+      (phoneFilters?.selectedCallerIds?.length ?? 0) > 0 ||
+      (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
+
+    if (!hasPhoneFilter) {
+      return res.status(400).json({ error: "Please select at least one phone filter (tags, caller ID, or phone index)" });
+    }
+
+    // Parse "contactId_propertyId" strings into target objects
+    const targets = parseTargets(targetIds);
+
+    const jobId = randomUUID();
+    const telnyxNumbers = await fetchTelnyxNumbers(telnyxNumberIds);
+    const startTime = parseScheduleDate(scheduleDate);
+    const parsedTimeSlots = parseTimeSlots(timeSlots);
+    const initialStatus = schedule ? "scheduled" : "processing";
+
+    await createJob({ jobId, name: body.name, notes, jobType, startTime, initialStatus, telnyxNumbers, parsedTimeSlots });
+    await createJobMessages(jobId, messages);
+    const { targetsCreated, contactsWithoutMatchingPhones } = await createJobTargets(jobId, targets, phoneFilters);
+    const { inSlot } = await finalizeJobStatus(jobId, parsedTimeSlots);
+
+    return res.status(inSlot ? 201 : 200).json({
+      message: inSlot ? "Job created successfully" : "Job scheduled successfully, waiting for time slot.",
+      jobId,
+      targetsCreated,
+      contactsProcessed: targets.length,
+      contactsWithoutMatchingPhones
+    });
+  } catch (error) {
+    console.error("Error creating SMS drip manual job:", error);
+    return res.status(500).json({
+      error: "Failed to create SMS drip manual job",
+      details: error instanceof Error ? error.message : "Unknown error"
+    });
+  }
+})
+
+
+
+
 export default router;

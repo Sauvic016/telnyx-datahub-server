@@ -172,3 +172,46 @@ export function resolveDateRange(filter: IDateFilter) {
 
   return { startDate, endDate };
 }
+
+export function parseAmPmTime(timeStr: string): Date {
+  // Parse "9:00 AM" or "5:30 PM" format to a Date with time component
+  const match = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) {
+    throw new Error(`Invalid time format: ${timeStr}`);
+  }
+
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const period = match[3].toUpperCase();
+
+  if (period === "PM" && hours !== 12) {
+    hours += 12;
+  } else if (period === "AM" && hours === 12) {
+    hours = 0;
+  }
+
+  // Create a date with just time (use epoch date, only time matters for time slots)
+  const date = new Date(1970, 0, 1, hours, minutes, 0, 0);
+  return date;
+}
+
+export function isInTimeSlot(timeSlots: { startTime: Date; endTime: Date }[]): boolean {
+  if (timeSlots.length === 0) return true;
+
+  const now = new Date();
+  const currentHours = now.getHours();
+  const currentMinutes = now.getMinutes();
+  const currentTimeMinutes = currentHours * 60 + currentMinutes;
+
+  return timeSlots.some(slot => {
+    const startHours = slot.startTime.getHours();
+    const startMinutes = slot.startTime.getMinutes();
+    const startTimeMinutes = startHours * 60 + startMinutes;
+
+    const endHours = slot.endTime.getHours();
+    const endMinutes = slot.endTime.getMinutes();
+    const endTimeMinutes = endHours * 60 + endMinutes;
+
+    return currentTimeMinutes >= startTimeMinutes && currentTimeMinutes <= endTimeMinutes;
+  });
+}
