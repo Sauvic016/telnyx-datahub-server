@@ -182,7 +182,7 @@ const formatRelatives = (contact: any): FormattedRelative[] => {
     const phones = formatPhones(r.toContact.contact_phones);
 
     rels.push({
-      id: r.toContact.id,
+      id: r.toContactId,
       first_name: r.toContact.first_name ?? null,
       last_name: r.toContact.last_name ?? null,
       relationType: r.relationType ?? null,
@@ -190,20 +190,6 @@ const formatRelatives = (contact: any): FormattedRelative[] => {
 
       // smsSent: phones.some((p) => p.smsSent),
       // smsDelivered: phones.some((p) => p.smsDelivered),
-    });
-  }
-
-  for (const r of contact.relationsTo ?? []) {
-    if (!r.fromContact) continue;
-
-    const phones = formatPhones(r.fromContact.contact_phones);
-
-    rels.push({
-      id: r.fromContact.id,
-      first_name: r.fromContact.first_name ?? null,
-      last_name: r.fromContact.last_name ?? null,
-      relationType: r.relationType ?? null,
-      contact_phones: phones,
     });
   }
 

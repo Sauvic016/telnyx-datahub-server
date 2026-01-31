@@ -279,7 +279,10 @@ export const fetchCompletedRecords = async (
     contacts: {
       include: {
         directskips: true,
-        contact_phones: true,
+        contact_phones: {
+          where: { telynxLookupId: { not: null } },
+          include: { telynxLookup: true },
+        },
         relationsFrom: {
           include: {
             toContact: {
