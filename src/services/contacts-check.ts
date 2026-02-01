@@ -1,5 +1,4 @@
 import { Owner } from "../models/Owner";
-import { PropertyData } from "../models/PropertyData";
 import { resolveDateRange } from "../utils/helper";
 
 export interface IRecordFilter {
@@ -42,7 +41,10 @@ const recordGetter = async (
   }
 
   if (pageType === "Newdata") {
-    ownerMatch.$or = [{ decision: { $exists: false } }, { decision: { $ne: "APPROVED" } }];
+    ownerMatch.$or = [
+      { decision: { $exists: false } },
+      { decision: { $ne: "APPROVED" } },
+    ];
   }
 
   if (Object.keys(ownerMatch).length > 0) {
@@ -77,6 +79,38 @@ const recordGetter = async (
     $unwind: {
       path: "$property",
       preserveNullAndEmptyArrays: false,
+    },
+  });
+
+  pipeline.push({
+    $group: {
+      _id: {
+        ownerId: "$_id",
+        propertyId: "$property._id",
+      },
+      doc: { $first: "$$ROOT" },
+    },
+  });
+
+  pipeline.push({
+    $replaceRoot: { newRoot: "$doc" },
+  });
+
+  /* --------------------------------------------------
+   3.6️⃣ ADD MOST RECENT LIST UPDATE FIELD
+-------------------------------------------------- */
+
+  pipeline.push({
+    $addFields: {
+      mostRecentListUpdate: {
+        $max: {
+          $map: {
+            input: { $ifNull: ["$property.currList", []] },
+            as: "item",
+            in: "$$item.list_updated_at",
+          },
+        },
+      },
     },
   });
 
@@ -121,18 +155,32 @@ const recordGetter = async (
   }
 
   // Use resolved dates from resolveDateRange function
-  if (startDate || endDate) {
-    propertyMatch["property.updatedAt"] = {};
+  // if (startDate || endDate) {
+  //   propertyMatch["property.updatedAt"] = {};
 
-    // Check if it's a single day (same date, ignoring time)
+  //   // Check if it's a single day (same date, ignoring time)
+  //   if (startDate && endDate) {
+  //     // Don't check for same day - use the dates as sent from frontend
+  //     propertyMatch["property.updatedAt"].$gte = startDate;
+  //     propertyMatch["property.updatedAt"].$lte = endDate;
+  //   } else if (startDate) {
+  //     propertyMatch["property.updatedAt"].$gte = startDate;
+  //   } else if (endDate) {
+  //     propertyMatch["property.updatedAt"].$lte = endDate;
+  //   }
+  // }
+
+  // Use resolved dates from resolveDateRange function
+  if (startDate || endDate) {
+    propertyMatch["mostRecentListUpdate"] = {};
+
     if (startDate && endDate) {
-      // Don't check for same day - use the dates as sent from frontend
-      propertyMatch["property.updatedAt"].$gte = startDate;
-      propertyMatch["property.updatedAt"].$lte = endDate;
+      propertyMatch["mostRecentListUpdate"].$gte = startDate;
+      propertyMatch["mostRecentListUpdate"].$lte = endDate;
     } else if (startDate) {
-      propertyMatch["property.updatedAt"].$gte = startDate;
+      propertyMatch["mostRecentListUpdate"].$gte = startDate;
     } else if (endDate) {
-      propertyMatch["property.updatedAt"].$lte = endDate;
+      propertyMatch["mostRecentListUpdate"].$lte = endDate;
     }
   }
 
@@ -174,12 +222,12 @@ const recordGetter = async (
     });
     pipeline.push({ $sort: { sortKey: sortOrderValue } });
   } else {
-    // Default sorting: use sortBy field or default to property.updatedAt
-    let sortField = "property.updatedAt"; // default
+    // Default sorting: use sortBy field or default to mostRecentListUpdate
+    let sortField = "mostRecentListUpdate"; // default
 
     if (filter?.sortBy) {
       if (filter.sortBy === "Date") {
-        sortField = "property.updatedAt";
+        sortField = "mostRecentListUpdate";
       } else if (filter.sortBy === "Name") {
         sortField = "owner_first_name";
       } else if (filter.sortBy === "Address") {
@@ -192,7 +240,6 @@ const recordGetter = async (
 
     pipeline.push({ $sort: { [sortField]: sortOrderValue } });
   }
-
   /* --------------------------------------------------
      7️⃣ FINAL SHAPE
   -------------------------------------------------- */
