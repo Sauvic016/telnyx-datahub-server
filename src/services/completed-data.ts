@@ -64,7 +64,6 @@ export const getCompletedDataForContactId = async (contactId: string) => {
     include: {
       directskips: true,
       contact_phones: {
-        where: { telynxLookupId: { not: null } },
         include: { telynxLookup: true },
       },
       property_details: { include: { lists: { include: { list: true } } } },
@@ -280,7 +279,6 @@ export const fetchCompletedRecords = async (
       include: {
         directskips: true,
         contact_phones: {
-          where: { telynxLookupId: { not: null } },
           include: { telynxLookup: true },
         },
         relationsFrom: {
@@ -289,7 +287,9 @@ export const fetchCompletedRecords = async (
               select: {
                 first_name: true,
                 last_name: true,
-                contact_phones: true,
+                contact_phones: {
+                  include: { telynxLookup: true },
+                },
               },
             },
           },
@@ -300,6 +300,16 @@ export const fetchCompletedRecords = async (
       include: {
         lists: { include: { list: true } },
         property_status: { include: { PropertyStatus: true } },
+        owners: {
+          include: {
+            contact: {
+              select: {
+                first_name: true,
+                last_name: true,
+              },
+            },
+          },
+        },
       },
     },
   };

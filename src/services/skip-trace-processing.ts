@@ -68,7 +68,15 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
 
         // 2. Save DirectSkip contacts (NO phone validation yet)
         const contactMap = await saveDirectSkipContacts(response, ownerId, poBoxAddress);
-        // 2.5 Save Property Details and Lists from MongoDB
+
+        // 2.5 Resolve ownership (check for owner2 from MongoDB)
+        const ownershipResult = await resolveOwnershipContacts(
+          ownerId,
+          contactMap.mainContactId,
+          response,
+        );
+
+        // 2.6 Save Property Details and Lists from MongoDB
         let propertyDetailsId;
         if (contactMap.mainContactId) {
           propertyDetailsId = await savePropertyDetails(
@@ -80,35 +88,55 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
           );
         }
 
+        // 2.7 Create PropertyOwnership records if we have a property
+        if (propertyDetailsId && ownershipResult.owners.length > 0) {
+          await createPropertyOwnerships(propertyDetailsId, ownershipResult.owners);
+        }
+
         // 3. Determine which phones to lookup based on deceased status
+        // Validation rules:
+        // - Owner alive: validate first 3 owner phones + first 2 owner2 phones (if present)
+        // - Owner deceased + owner2 has phones: validate first 2 owner2 phones
+        // - Owner deceased + no owner2 phones: validate first relative's 1st phone
         const phonesToValidate: PhoneToValidate[] = [];
 
         if (response.contacts && response.contacts.length > 0) {
-          // Check if the first contact (main contact) is deceased
-          const firstContact = response.contacts[0];
-          const isMainContactDeceased = firstContact.names?.some((name) => name.deceased === "Y") ?? false;
+          // Use the resolved main contact, not just contacts[0]
+          const resolved = resolveMainContactOptimized(response.contacts, response.input);
+          const mainContact = resolved?.contact;
+          const isMainContactDeceased = mainContact?.names?.some((name) => name.deceased === "Y") ?? false;
 
           if (isMainContactDeceased) {
-            // Main contact is deceased: Get first relative's phone
-            const firstRelative = firstContact.relatives?.[0];
+            // Main contact is deceased
+            console.log(`[SkipTraceProcessing] Main contact is deceased`);
 
-            if (firstRelative && firstRelative.phones && firstRelative.phones.length > 0) {
-              const relativeId = contactMap.relatives.get(firstRelative.name || "");
-              if (relativeId && firstRelative.phones[0].phonenumber) {
-                phonesToValidate.push({
-                  contactId: relativeId,
-                  phoneNumber: firstRelative.phones[0].phonenumber,
-                  phoneType: firstRelative.phones[0].phonetype || "Unknown",
-                  isMainContact: false,
-                });
+            if (ownershipResult.owner2HasPhones) {
+              // Owner2 has phones: validate first 2 owner2 phones
+              console.log(`[SkipTraceProcessing] Using owner2 phones for validation (owner deceased)`);
+              phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
+            } else {
+              // No owner2 phones: validate first relative's 1st phone
+              console.log(`[SkipTraceProcessing] No owner2 phones, using first relative's phone`);
+              const firstRelative = mainContact?.relatives?.[0];
+
+              if (firstRelative && firstRelative.phones && firstRelative.phones.length > 0) {
+                const relativeId = contactMap.relatives.get(firstRelative.name || "");
+                if (relativeId && firstRelative.phones[0].phonenumber) {
+                  phonesToValidate.push({
+                    contactId: relativeId,
+                    phoneNumber: firstRelative.phones[0].phonenumber,
+                    phoneType: firstRelative.phones[0].phonetype || "Unknown",
+                    isMainContact: false,
+                  });
+                }
               }
             }
           } else {
-            // Main contact is not deceased: Get first 3 phones from first contact
+            // Main contact is alive: validate first 3 owner phones
             const mainContactId = contactMap.mainContactId;
 
-            if (mainContactId && firstContact.phones) {
-              const phonesToAdd = firstContact.phones.slice(0, 3);
+            if (mainContactId && mainContact?.phones) {
+              const phonesToAdd = mainContact.phones.slice(0, 3);
               for (const phone of phonesToAdd) {
                 if (phone.phonenumber) {
                   phonesToValidate.push({
@@ -119,6 +147,12 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
                   });
                 }
               }
+            }
+
+            // Also add owner2's first 2 phones for validation (if present)
+            if (ownershipResult.owner2PhonesToValidate.length > 0) {
+              console.log(`[SkipTraceProcessing] Adding owner2 phones to validation queue (owner alive)`);
+              phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
             }
           }
         }
@@ -194,6 +228,22 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
             },
             { strict: false },
           );
+        } else {
+          // No phones to validate - still update pipeline with contactId and propertyDetailsId
+          console.log(`[SkipTraceProcessing] No phones to validate, updating pipeline with contact and property IDs`);
+          await prisma.pipeline.update({
+            where: {
+              ownerId_propertyId: {
+                ownerId,
+                propertyId,
+              },
+            },
+            data: {
+              contactId: contactMap.mainContactId,
+              propertyDetailsId,
+              updatedAt: new Date(),
+            },
+          });
         }
       } catch (err) {
         console.error(`[SkipTraceProcessing] Error processing row ${result.identityKey}:`, err);
@@ -314,21 +364,60 @@ const saveDirectSkipContacts = async (
           }
 
           await prisma.directSkip.upsert({
-            where: { contactId: contact.id },
+            where: { contactId: contact!.id },
             update: {
               status: DirectSkipStatus.COMPLETED,
               skipTracedAt: new Date(),
               confirmedAddress: confirmedAddr as any,
             },
             create: {
-              contactId: contact.id,
+              contactId: contact!.id,
               status: DirectSkipStatus.COMPLETED,
               skipTracedAt: new Date(),
               confirmedAddress: confirmedAddr as any,
             },
           });
 
-          processedContactIds.add(contact.id);
+          processedContactIds.add(contact!.id);
+
+          // Save main contact's phones (without validation) so they exist in the database
+          const contactPhones = contactData.phones || [];
+          if (contactPhones.length > 0) {
+            const contactId = contact!.id;
+            await prisma.$transaction(async (tx) => {
+              for (const phone of contactPhones) {
+                if (!phone.phonenumber) continue;
+                const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
+                const last10 = formattedNumber.slice(-10);
+                const existing = await tx.contact_phones.findFirst({
+                  where: {
+                    contact_id: contactId,
+                    phone_number: {
+                      endsWith: last10,
+                    },
+                  },
+                });
+
+                if (existing) {
+                  await tx.contact_phones.update({
+                    where: { id: existing.id },
+                    data: { phone_type: phone.phonetype, phone_number: formattedNumber },
+                  });
+                } else {
+                  const phoneId = crypto.randomUUID();
+                  await tx.contact_phones.create({
+                    data: {
+                      id: phoneId,
+                      contact_id: contactId,
+                      phone_number: formattedNumber,
+                      phone_type: phone.phonetype,
+                    },
+                  });
+                }
+              }
+            });
+            console.log(`[SaveContacts] Saved ${contactPhones.length} phones for contact ${contactId}`);
+          }
         } else {
           console.log(`[SaveContacts] Skipping update for duplicate contact ${contact!.id} in batch`);
         }
@@ -379,6 +468,11 @@ const saveDirectSkipContacts = async (
                     user_id: "1",
                   },
                 });
+                console.log(`[SaveContacts] Created relative ${relativeContact.id}: ${relFirstName} ${relLastName}`);
+              }
+
+              // Save phones for relative (both new and existing relatives)
+              if (relPhoneNumbers.length > 0) {
                 await prisma.$transaction(async (tx) => {
                   for (const phone of relPhoneNumbers) {
                     if (!phone.phonenumber) continue;
@@ -386,9 +480,9 @@ const saveDirectSkipContacts = async (
                     const last10 = formattedNumber.slice(-10);
                     const existing = await tx.contact_phones.findFirst({
                       where: {
-                        contact_id: relativeContact!.id ?? null,
+                        contact_id: relativeContact!.id,
                         phone_number: {
-                          endsWith: last10, // matches any format ending in same 10 digits
+                          endsWith: last10,
                         },
                       },
                     });
@@ -403,7 +497,7 @@ const saveDirectSkipContacts = async (
                       await tx.contact_phones.create({
                         data: {
                           id: phoneId,
-                          contact_id: relativeContact!.id ?? null,
+                          contact_id: relativeContact!.id,
                           phone_number: formattedNumber,
                           phone_type: phone.phonetype,
                         },
@@ -411,8 +505,7 @@ const saveDirectSkipContacts = async (
                     }
                   }
                 });
-
-                console.log(`[SaveContacts] Created relative ${relativeContact.id}: ${relFirstName} ${relLastName}`);
+                console.log(`[SaveContacts] Saved ${relPhoneNumbers.length} phones for relative ${relativeContact.id}`);
               }
 
               // Store relative mapping
@@ -706,11 +799,11 @@ const savePropertyDetails = async (
 
 const normalize = (v?: string) => v?.toLowerCase().trim() || "";
 
-type ResolvedIdentity = {
-  contact: DirectSkipContact;
-  name: DirectSkipNameRecord;
-  score: number;
-};
+// type ResolvedIdentity = {
+//   contact: DirectSkipContact;
+//   name: DirectSkipNameRecord;
+//   score: number;
+// };
 
 // export function resolveMainContactOptimized(
 //   contacts: DirectSkipContact[],
@@ -821,3 +914,224 @@ export function resolveMainContactOptimized(
     name: firstContact.names[0],
   };
 }
+
+// ======================================================
+// OWNERSHIP LOGIC
+// ======================================================
+
+interface OwnershipContact {
+  contactId: string;
+  isPrimary: boolean;
+  ownershipType: string;
+}
+
+interface OwnershipResult {
+  owners: OwnershipContact[];
+  owner2PhonesToValidate: PhoneToValidate[]; // Up to first 2 phones
+  owner2HasPhones: boolean;
+}
+
+/**
+ * Resolves ownership contacts by checking owner1 and owner2 from MongoDB Owner document.
+ * - If owner2 is empty or same as owner1 → single owner
+ * - If owner2 is different → find/create contact for owner2
+ */
+export const resolveOwnershipContacts = async (
+  ownerId: string,
+  mainContactId: string,
+  response: DirectSkipSearchResponse,
+): Promise<OwnershipResult> => {
+  const result: OwnershipResult = {
+    owners: [],
+    owner2PhonesToValidate: [],
+    owner2HasPhones: false,
+  };
+
+  // Always add main contact as primary owner
+  if (mainContactId) {
+    result.owners.push({
+      contactId: mainContactId,
+      isPrimary: true,
+      ownershipType: "owner",
+    });
+  }
+
+  // Fetch Owner document from MongoDB
+  const ownerDoc: any = await Owner.findOne({ _id: ownerId });
+  if (!ownerDoc) {
+    console.log(`[Ownership] No Owner document found for ${ownerId}`);
+    return result;
+  }
+
+  const owner1First = normalize(ownerDoc.owner_first_name);
+  const owner1Last = normalize(ownerDoc.owner_last_name);
+  const owner2First = normalize(ownerDoc.owner_2_first_name);
+  const owner2Last = normalize(ownerDoc.owner_2_last_name);
+
+  // Check if owner2 exists
+  if (!owner2First && !owner2Last) {
+    console.log(`[Ownership] No owner2 found for ${ownerId}`);
+    return result;
+  }
+
+  // Check if owner2 is same as owner1
+  if (owner1First === owner2First && owner1Last === owner2Last) {
+    console.log(`[Ownership] Owner2 is same as owner1 for ${ownerId}`);
+    return result;
+  }
+
+  console.log(`[Ownership] Found different owner2: ${owner2First} ${owner2Last}`);
+
+  // Get mailing address from owner doc or response input
+  const mailingAddress = normalize(ownerDoc.mailing_address || response.input?.address);
+  const mailingCity = normalize(ownerDoc.mailing_city || response.input?.city);
+  const mailingState = normalize(ownerDoc.mailing_state || response.input?.state);
+  const mailingZip = ownerDoc.mailing_zip_code || response.input?.zip || "";
+
+  // Find or create contact for owner2
+  let owner2Contact = await prisma.contacts.findFirst({
+    where: {
+      first_name: { equals: owner2First, mode: "insensitive" },
+      last_name: { equals: owner2Last, mode: "insensitive" },
+      mailing_address: { equals: mailingAddress, mode: "insensitive" },
+    },
+  });
+
+  if (!owner2Contact) {
+    owner2Contact = await prisma.contacts.create({
+      data: {
+        id: crypto.randomUUID(),
+        first_name: owner2First,
+        last_name: owner2Last,
+        mailing_address: mailingAddress,
+        mailing_city: mailingCity,
+        mailing_state: mailingState,
+        mailing_zip: mailingZip,
+        user_id: "1",
+      },
+    });
+    console.log(`[Ownership] Created owner2 contact ${owner2Contact.id}: ${owner2First} ${owner2Last}`);
+  } else {
+    console.log(`[Ownership] Found existing owner2 contact ${owner2Contact.id}`);
+  }
+
+  // Add owner2 to owners list
+  result.owners.push({
+    contactId: owner2Contact.id,
+    isPrimary: false,
+    ownershipType: "co-owner",
+  });
+
+  // Check if owner2 has phones in DirectSkip response
+  // Look for owner2 in the contacts array
+  let owner2Phones: { phonenumber?: string; phonetype?: string }[] = [];
+
+  if (response.contacts) {
+    for (const contact of response.contacts) {
+      for (const name of contact.names || []) {
+        const first = normalize(name.firstname);
+        const last = normalize(name.lastname);
+
+        if (first === owner2First && last === owner2Last) {
+          // Found owner2 in DirectSkip response, get all phones
+          if (contact.phones && contact.phones.length > 0) {
+            owner2Phones = contact.phones;
+          }
+          break;
+        }
+      }
+      if (owner2Phones.length > 0) break;
+    }
+  }
+
+  // Save ALL owner2 phones to database (regardless of validation)
+  if (owner2Phones.length > 0) {
+    result.owner2HasPhones = true;
+    await prisma.$transaction(async (tx) => {
+      for (const phone of owner2Phones) {
+        if (!phone.phonenumber) continue;
+        const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
+        const last10 = formattedNumber.slice(-10);
+        const existing = await tx.contact_phones.findFirst({
+          where: {
+            contact_id: owner2Contact!.id,
+            phone_number: {
+              endsWith: last10,
+            },
+          },
+        });
+
+        if (existing) {
+          await tx.contact_phones.update({
+            where: { id: existing.id },
+            data: { phone_type: phone.phonetype, phone_number: formattedNumber },
+          });
+        } else {
+          const phoneId = crypto.randomUUID();
+          await tx.contact_phones.create({
+            data: {
+              id: phoneId,
+              contact_id: owner2Contact!.id,
+              phone_number: formattedNumber,
+              phone_type: phone.phonetype,
+            },
+          });
+        }
+      }
+    });
+    console.log(`[Ownership] Saved ${owner2Phones.length} phones for owner2 ${owner2Contact.id}`);
+
+    // Add first 2 phones for validation
+    const phonesToValidate = owner2Phones.slice(0, 2);
+    for (const phone of phonesToValidate) {
+      if (phone.phonenumber) {
+        result.owner2PhonesToValidate.push({
+          contactId: owner2Contact.id,
+          phoneNumber: phone.phonenumber,
+          phoneType: phone.phonetype || "Unknown",
+          isMainContact: false,
+        });
+      }
+    }
+    console.log(`[Ownership] Owner2 phones to validate: ${result.owner2PhonesToValidate.length}`);
+  }
+
+  return result;
+};
+
+/**
+ * Creates PropertyOwnership records linking a property to its owners
+ */
+export const createPropertyOwnerships = async (
+  propertyId: string,
+  owners: OwnershipContact[],
+): Promise<void> => {
+  for (const owner of owners) {
+    try {
+      await prisma.propertyOwnership.upsert({
+        where: {
+          propertyId_contactId: {
+            propertyId,
+            contactId: owner.contactId,
+          },
+        },
+        update: {
+          isPrimary: owner.isPrimary,
+          ownershipType: owner.ownershipType,
+          updatedAt: new Date(),
+        },
+        create: {
+          propertyId,
+          contactId: owner.contactId,
+          isPrimary: owner.isPrimary,
+          ownershipType: owner.ownershipType,
+        },
+      });
+      console.log(
+        `[Ownership] Created/updated ownership: property ${propertyId} → contact ${owner.contactId} (${owner.ownershipType}, primary: ${owner.isPrimary})`,
+      );
+    } catch (err) {
+      console.error(`[Ownership] Error creating ownership for ${owner.contactId}:`, err);
+    }
+  }
+};

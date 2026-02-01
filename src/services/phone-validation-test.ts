@@ -88,10 +88,14 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
     let phoneId!: string;
 
     await prisma.$transaction(async (tx) => {
+      // Use last 10 digits for flexible matching (same approach as saveDirectSkipContacts)
+      const last10 = normalized.slice(-10);
       const existingForContact = await tx.contact_phones.findFirst({
         where: {
           contact_id: contactId,
-          OR: [{ phone_number: e164 }, { phone_number: normalized }],
+          phone_number: {
+            endsWith: last10,
+          },
         },
       });
 

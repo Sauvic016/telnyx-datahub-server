@@ -113,8 +113,8 @@ router.post("/delete", async (req, res) => {
 
       // Parse excluded IDs into ownerId-propertyId pairs
       const excludedPairs = excludedIds.map((id) => {
-        const [propertyId, ownerId] = id.split("-");
-        return { ownerId, propertyId };
+        const [contactId, propertyDetailsId] = id.split("_");
+        return { contactId, propertyDetailsId };
       });
 
       const whereClause: any = {};
@@ -156,8 +156,8 @@ router.post("/delete", async (req, res) => {
         const allRecords = await prisma.pipeline.findMany({
           where: whereClause,
           select: {
-            ownerId: true,
-            propertyId: true,
+            contactId: true,
+            propertyDetailsId: true,
           },
         });
 
@@ -165,7 +165,8 @@ router.post("/delete", async (req, res) => {
         const recordsToDelete = allRecords.filter(
           (record) =>
             !excludedPairs.some(
-              (excluded) => excluded.ownerId === record.ownerId && excluded.propertyId === record.propertyId,
+              (excluded) =>
+                excluded.contactId === record.contactId && excluded.propertyDetailsId === record.propertyDetailsId,
             ),
         );
 
@@ -174,8 +175,8 @@ router.post("/delete", async (req, res) => {
           const result = await prisma.pipeline.deleteMany({
             where: {
               OR: recordsToDelete.map((record) => ({
-                ownerId: record.ownerId,
-                propertyId: record.propertyId,
+                contactId: record.contactId,
+                propertyDetailsId: record.propertyDetailsId,
               })),
             },
           });
@@ -190,8 +191,8 @@ router.post("/delete", async (req, res) => {
           skip: startIndex,
           take: limit,
           select: {
-            ownerId: true,
-            propertyId: true,
+            contactId: true,
+            propertyDetailsId: true,
           },
         });
 
@@ -199,7 +200,8 @@ router.post("/delete", async (req, res) => {
         const recordsToDelete = recordsInRange.filter(
           (record) =>
             !excludedPairs.some(
-              (excluded) => excluded.ownerId === record.ownerId && excluded.propertyId === record.propertyId,
+              (excluded) =>
+                excluded.contactId === record.contactId && excluded.propertyDetailsId === record.propertyDetailsId,
             ),
         );
 
@@ -208,8 +210,8 @@ router.post("/delete", async (req, res) => {
           const result = await prisma.pipeline.deleteMany({
             where: {
               OR: recordsToDelete.map((record) => ({
-                ownerId: record.ownerId,
-                propertyId: record.propertyId,
+                contactId: record.contactId,
+                propertyDetailsId: record.propertyDetailsId,
               })),
             },
           });
@@ -226,16 +228,16 @@ router.post("/delete", async (req, res) => {
 
       // Parse IDs into ownerId-propertyId pairs
       const pairs = ids.map((id) => {
-        const [propertyId, ownerId] = id.split("-");
-        return { ownerId, propertyId };
+        const [contactId, propertyDetailsId] = id.split("_");
+        return { contactId, propertyDetailsId };
       });
 
       // Delete the records
       const result = await prisma.pipeline.deleteMany({
         where: {
           OR: pairs.map((pair) => ({
-            ownerId: pair.ownerId,
-            propertyId: pair.propertyId,
+            contactId: pair.contactId,
+            propertyDetailsId: pair.propertyDetailsId,
           })),
         },
       });
@@ -395,7 +397,6 @@ router.patch("/update-address", async (req, res) => {
   }
 });
 
-
 // ==================== SMS Drip Types ====================
 
 interface SmsDripMessage {
@@ -423,7 +424,7 @@ function parseTargetString(targetStr: string): SmsDripTarget {
 }
 
 function parseTargets(targets: string[]): SmsDripTarget[] {
-  return targets.map(parseTargetString).filter(t => t.contactId);
+  return targets.map(parseTargetString).filter((t) => t.contactId);
 }
 
 interface PhoneFilter {
@@ -435,7 +436,7 @@ interface PhoneFilter {
 interface ContactFilter {
   listName?: string;
   propertyStatusId?: string;
-  filterDateType?: string;  // "today", "yesterday", "this_week", "last_week", "this_month", "last_month", "custom"
+  filterDateType?: string; // "today", "yesterday", "this_week", "last_week", "this_month", "last_month", "custom"
   startDate?: string;
   endDate?: string;
   sortBy?: "updatedAt" | "lastSold";
@@ -486,14 +487,14 @@ const SECONDS_MAP: Record<string, number> = {
   min: 60,
   hr: 3600,
   day: 86400,
-  week: 604800
+  week: 604800,
 };
 
 async function fetchTelnyxNumbers(ids: string[]) {
   if (ids.length === 0) return [];
   return prisma.telnyx_numbers.findMany({
     where: { id: { in: ids } },
-    select: { id: true }
+    select: { id: true },
   });
 }
 
@@ -503,9 +504,9 @@ function parseScheduleDate(scheduleDate?: string): Date | null {
 }
 
 function parseTimeSlots(timeSlots: SmsDripTimeSlot[]) {
-  return timeSlots.map(slot => ({
+  return timeSlots.map((slot) => ({
     startTime: parseAmPmTime(slot.start),
-    endTime: parseAmPmTime(slot.end)
+    endTime: parseAmPmTime(slot.end),
   }));
 }
 
@@ -530,16 +531,16 @@ async function createJob(params: {
       status: params.initialStatus as any,
       created_at: new Date(),
       job_telnyx_association: {
-        create: params.telnyxNumbers.map(tn => ({ telnyx_number_id: tn.id }))
+        create: params.telnyxNumbers.map((tn) => ({ telnyx_number_id: tn.id })),
       },
       job_time_slots: {
-        create: params.parsedTimeSlots.map(slot => ({
+        create: params.parsedTimeSlots.map((slot) => ({
           id: randomUUID(),
           start_time: slot.startTime,
-          end_time: slot.endTime
-        }))
-      }
-    }
+          end_time: slot.endTime,
+        })),
+      },
+    },
   });
 }
 
@@ -559,9 +560,9 @@ async function createJobMessages(jobId: string, messages: SmsDripMessage[]) {
         wait_between_sends_sec: msg.wait_between_sends_sec || 5,
         created_at: new Date(),
         job_message_template_association: {
-          create: templateIds.map(templateId => ({ template_id: templateId }))
-        }
-      }
+          create: templateIds.map((templateId) => ({ template_id: templateId })),
+        },
+      },
     });
   }
 }
@@ -569,13 +570,13 @@ async function createJobMessages(jobId: string, messages: SmsDripMessage[]) {
 async function createJobTargets(
   jobId: string,
   targets: SmsDripTarget[],
-  phoneFilters?: PhoneFilter
+  phoneFilters?: PhoneFilter,
 ): Promise<{ targetsCreated: number; contactsWithoutMatchingPhones: number }> {
   if (targets.length === 0) {
     return { targetsCreated: 0, contactsWithoutMatchingPhones: 0 };
   }
 
-  const contactIds = targets.map(t => t.contactId);
+  const contactIds = targets.map((t) => t.contactId);
 
   // Build phone query with filters
   const phoneWhereClause: any = { contact_id: { in: contactIds } };
@@ -591,9 +592,8 @@ async function createJobTargets(
   const contactPhones = await prisma.contact_phones.findMany({
     where: phoneWhereClause,
     select: { id: true, contact_id: true },
-    orderBy: { id: "asc" } // Consistent ordering for index selection
+    orderBy: { id: "asc" }, // Consistent ordering for index selection
   });
-
 
   // Group phones by contact_id for index filtering
   const phonesByContact = new Map<string, { id: string; contact_id: string }[]>();
@@ -617,43 +617,43 @@ async function createJobTargets(
     }
   } else {
     // No index filter, use all phones
-    filteredPhones = contactPhones.filter(p => p.contact_id !== null) as { id: string; contact_id: string }[];
+    filteredPhones = contactPhones.filter((p) => p.contact_id !== null) as { id: string; contact_id: string }[];
   }
 
   // Map contactId -> propertyId
-  const propertyByContact = new Map(targets.map(t => [t.contactId, t.propertyId]));
+  const propertyByContact = new Map(targets.map((t) => [t.contactId, t.propertyId]));
 
   // Create targets - one per matching phone
-  const jobTargetsData = filteredPhones.map(phone => ({
+  const jobTargetsData = filteredPhones.map((phone) => ({
     id: randomUUID(),
     job_id: jobId,
     contact_id: phone.contact_id,
     phone_id: phone.id,
     property_id: propertyByContact.get(phone.contact_id) || null,
     status: "pending" as const,
-    last_sequence_sent: 0
+    last_sequence_sent: 0,
   }));
 
   if (jobTargetsData.length > 0) {
     await prisma.job_targets.createMany({ data: jobTargetsData });
   }
 
-  const contactsWithPhones = new Set(filteredPhones.map(p => p.contact_id));
-  const contactsWithoutMatchingPhones = targets.filter(t => !contactsWithPhones.has(t.contactId)).length;
+  const contactsWithPhones = new Set(filteredPhones.map((p) => p.contact_id));
+  const contactsWithoutMatchingPhones = targets.filter((t) => !contactsWithPhones.has(t.contactId)).length;
 
   return { targetsCreated: jobTargetsData.length, contactsWithoutMatchingPhones };
 }
 
 async function finalizeJobStatus(
   jobId: string,
-  parsedTimeSlots: { startTime: Date; endTime: Date }[]
+  parsedTimeSlots: { startTime: Date; endTime: Date }[],
 ): Promise<{ inSlot: boolean }> {
   const inSlot = isInTimeSlot(parsedTimeSlots);
-  const newStatus = (!inSlot && parsedTimeSlots.length > 0) ? "scheduled" : "processing";
+  const newStatus = !inSlot && parsedTimeSlots.length > 0 ? "scheduled" : "processing";
 
   await prisma.jobs.update({
     where: { id: jobId },
-    data: { status: newStatus }
+    data: { status: newStatus },
   });
 
   return { inSlot: inSlot || parsedTimeSlots.length === 0 };
@@ -676,7 +676,7 @@ router.post("/sms-drip-bulk", async (req, res) => {
       startIndex = 0,
       excludedIds = [],
       additionalIds = [],
-      filters
+      filters,
     } = body;
 
     const { phoneFilters, contactFilter } = filters || {};
@@ -698,7 +698,9 @@ router.post("/sms-drip-bulk", async (req, res) => {
       (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
 
     if (!hasPhoneFilter) {
-      return res.status(400).json({ error: "Please select at least one phone filter (tags, caller ID, or phone index)" });
+      return res
+        .status(400)
+        .json({ error: "Please select at least one phone filter (tags, caller ID, or phone index)" });
     }
 
     // Build filters for fetchCompletedRecords from contactFilter
@@ -709,7 +711,7 @@ router.post("/sms-drip-bulk", async (req, res) => {
       recordFilters.dateRange = {
         type: contactFilter.filterDateType,
         startDate: contactFilter.startDate,
-        endDate: contactFilter.endDate
+        endDate: contactFilter.endDate,
       };
     }
     if (contactFilter?.sortBy) recordFilters.sortBy = contactFilter.sortBy;
@@ -720,7 +722,11 @@ router.post("/sms-drip-bulk", async (req, res) => {
     }
 
     // Fetch records using the same logic as GET /completed-data
-    const { rows } = await fetchCompletedRecords(recordFilters, { skip: startIndex, take: limit }, contactFilter?.search);
+    const { rows } = await fetchCompletedRecords(
+      recordFilters,
+      { skip: startIndex, take: limit },
+      contactFilter?.search,
+    );
 
     // Extract targets from fetched records
     const excludedSet = new Set(excludedIds);
@@ -729,7 +735,7 @@ router.post("/sms-drip-bulk", async (req, res) => {
     const targetsFromRecords: SmsDripTarget[] = rows
       .map((row: any) => ({
         contactId: row.contact?.id || row.contactId,
-        propertyId: row.propertyDetails?.id || row.propertyDetailsId
+        propertyId: row.propertyDetails?.id || row.propertyDetailsId,
       }))
       .filter((t: SmsDripTarget) => t.contactId)
       .filter((t: SmsDripTarget) => !excludedSet.has(`${t.contactId}_${t.propertyId}`));
@@ -741,8 +747,8 @@ router.post("/sms-drip-bulk", async (req, res) => {
 
     // Parse and add additional targets (skip duplicates and excluded)
     const additionalTargets = parseTargets(additionalIds)
-      .filter(t => !excludedSet.has(`${t.contactId}_${t.propertyId}`))
-      .filter(t => {
+      .filter((t) => !excludedSet.has(`${t.contactId}_${t.propertyId}`))
+      .filter((t) => {
         const key = `${t.contactId}_${t.propertyId}`;
         if (seenIds.has(key)) return false;
         seenIds.add(key);
@@ -761,7 +767,16 @@ router.post("/sms-drip-bulk", async (req, res) => {
     const parsedTimeSlots = parseTimeSlots(timeSlots);
     const initialStatus = schedule ? "scheduled" : "processing";
 
-    await createJob({ jobId, name: body.name, notes, jobType, startTime, initialStatus, telnyxNumbers, parsedTimeSlots });
+    await createJob({
+      jobId,
+      name: body.name,
+      notes,
+      jobType,
+      startTime,
+      initialStatus,
+      telnyxNumbers,
+      parsedTimeSlots,
+    });
     await createJobMessages(jobId, messages);
     const { targetsCreated, contactsWithoutMatchingPhones } = await createJobTargets(jobId, targets, phoneFilters);
     const { inSlot } = await finalizeJobStatus(jobId, parsedTimeSlots);
@@ -771,13 +786,13 @@ router.post("/sms-drip-bulk", async (req, res) => {
       jobId,
       targetsCreated,
       recordsMatched: rows.length,
-      contactsWithoutMatchingPhones
+      contactsWithoutMatchingPhones,
     });
   } catch (error) {
     console.error("Error creating SMS drip bulk job:", error);
     return res.status(500).json({
       error: "Failed to create SMS drip bulk job",
-      details: error instanceof Error ? error.message : "Unknown error"
+      details: error instanceof Error ? error.message : "Unknown error",
     });
   }
 });
@@ -785,7 +800,17 @@ router.post("/sms-drip-bulk", async (req, res) => {
 router.post("/sms-drip-manual", async (req, res) => {
   try {
     const body: SmsDripRequestBody & { targetIds: string[] } = req.body;
-    const { telnyxNumberIds = [], notes = "", jobType = "bulk", scheduleDate, schedule, messages, timeSlots = [], targetIds, filters } = body;
+    const {
+      telnyxNumberIds = [],
+      notes = "",
+      jobType = "bulk",
+      scheduleDate,
+      schedule,
+      messages,
+      timeSlots = [],
+      targetIds,
+      filters,
+    } = body;
 
     const { phoneFilters } = filters || {};
 
@@ -806,7 +831,9 @@ router.post("/sms-drip-manual", async (req, res) => {
       (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
 
     if (!hasPhoneFilter) {
-      return res.status(400).json({ error: "Please select at least one phone filter (tags, caller ID, or phone index)" });
+      return res
+        .status(400)
+        .json({ error: "Please select at least one phone filter (tags, caller ID, or phone index)" });
     }
 
     // Parse "contactId_propertyId" strings into target objects
@@ -818,7 +845,16 @@ router.post("/sms-drip-manual", async (req, res) => {
     const parsedTimeSlots = parseTimeSlots(timeSlots);
     const initialStatus = schedule ? "scheduled" : "processing";
 
-    await createJob({ jobId, name: body.name, notes, jobType, startTime, initialStatus, telnyxNumbers, parsedTimeSlots });
+    await createJob({
+      jobId,
+      name: body.name,
+      notes,
+      jobType,
+      startTime,
+      initialStatus,
+      telnyxNumbers,
+      parsedTimeSlots,
+    });
     await createJobMessages(jobId, messages);
     const { targetsCreated, contactsWithoutMatchingPhones } = await createJobTargets(jobId, targets, phoneFilters);
     const { inSlot } = await finalizeJobStatus(jobId, parsedTimeSlots);
@@ -828,18 +864,15 @@ router.post("/sms-drip-manual", async (req, res) => {
       jobId,
       targetsCreated,
       contactsProcessed: targets.length,
-      contactsWithoutMatchingPhones
+      contactsWithoutMatchingPhones,
     });
   } catch (error) {
     console.error("Error creating SMS drip manual job:", error);
     return res.status(500).json({
       error: "Failed to create SMS drip manual job",
-      details: error instanceof Error ? error.message : "Unknown error"
+      details: error instanceof Error ? error.message : "Unknown error",
     });
   }
-})
-
-
-
+});
 
 export default router;

@@ -172,7 +172,31 @@ router.post("/add-property-status", async (req, res) => {
 router.patch("/property-status/:propertyId", async (req, res) => {
   const { propertyId } = req.params as any;
   console.log(propertyId);
-  const { property_status } = req.body;
+  const { property_status, statusIdToRemove } = req.body;
+
+  if (property_status === null && statusIdToRemove) {
+    try {
+      const deleted = await prisma.propertyStatusAssociation.deleteMany({
+        where: {
+          propertyId,
+          propertyStatusId: statusIdToRemove,
+        },
+      });
+
+      if (deleted.count === 0) {
+        return res.status(404).json({ message: "Status association not found" });
+      }
+
+      res.status(200).json({
+        message: "Status removed successfully",
+      });
+      return;
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: "Internal server error" });
+      return;
+    }
+  }
 
   const { id: propertyStatusId } = property_status;
   if (!propertyStatusId) {

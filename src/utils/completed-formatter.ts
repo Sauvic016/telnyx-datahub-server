@@ -94,6 +94,7 @@ interface FormattedPropertyDetails {
   // Segregated property status
   primaryPropertyStatus: FormattedPropertyStatus | null;
   secondaryPropertyStatus: FormattedPropertyStatus | null;
+  propertyOwners: any;
 }
 
 interface FormattedRow {
@@ -228,6 +229,7 @@ const formatPrismaPropertyDetails = (propertyDetails: any): FormattedPropertyDet
       lists: [],
       primaryPropertyStatus: null,
       secondaryPropertyStatus: null,
+      propertyOwners: null,
     };
   }
 
@@ -252,6 +254,7 @@ const formatPrismaPropertyDetails = (propertyDetails: any): FormattedPropertyDet
     lists: formatPrismaLists(propertyDetails.lists),
     primaryPropertyStatus,
     secondaryPropertyStatus,
+    propertyOwners: propertyDetails.owners ?? null,
   };
 };
 
