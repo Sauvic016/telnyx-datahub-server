@@ -496,6 +496,27 @@ function parseNumeric(value: any): number | null {
   return isNaN(parsed) ? null : parsed;
 }
 
+function isSaleDateTodayOrFuture(value: any): boolean {
+  if (value === null || value === undefined || value === "") return false;
+  const dateStr = String(value).trim();
+  if (!dateStr) return false;
+
+  // Try parsing MM-DD-YYYY or M-D-YYYY format
+  let parsed = parse(dateStr, "M-d-yyyy", new Date());
+  if (!isValid(parsed)) {
+    // Try parsing MM/DD/YYYY or M/D/YYYY format
+    parsed = parse(dateStr, "M/d/yyyy", new Date());
+  }
+  if (!isValid(parsed)) return false;
+
+  // Compare with today (set time to start of day for comparison)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  parsed.setHours(0, 0, 0, 0);
+
+  return parsed >= today;
+}
+
 function generateList(startedByBotId: number, record: any): string {
   if (!BOTMAP[startedByBotId] || !BOTMAP[startedByBotId]?.flow) return "";
   const lists = BOTMAP[startedByBotId].flow
@@ -519,7 +540,10 @@ function filterList(botId: number, record: any): string {
       lists.push("Akron Delinquent Water Bill")
     }
   } else if (botId === 2) {
-    lists.push("Foreclosure")
+    const saleDate = record[`${botId}_sale_date`];
+    if (isSaleDateTodayOrFuture(saleDate)) {
+      lists.push("Foreclosure");
+    }
   } else if (botId === 3) {
     lists.push("Notice of Default")
   } else if (botId === 4 || botId === 5) {
