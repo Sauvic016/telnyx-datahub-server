@@ -12,13 +12,26 @@ export interface IRecordFilter {
 }
 
 const recordGetter = async (
-  page: number,
+  startIndex: number,
   limit: number,
   pageType: "Records" | "Newdata" | "Decision" = "Records",
   recordTab: "all" | "clean" | "incomplete" = "all",
   filter?: IRecordFilter,
+  excludedIds?: string[],
 ) => {
-  const skip = (page - 1) * limit;
+  console.log("\n========== [recordGetter] START ==========");
+  console.log("[recordGetter] Input params:", {
+    startIndex,
+    limit,
+    pageType,
+    recordTab,
+    filter: JSON.stringify(filter, null, 2),
+    excludedIdsCount: excludedIds?.length ?? 0,
+    excludedIds: excludedIds,
+  });
+
+  const skip = startIndex * limit;
+  console.log("[recordGetter] Pagination: skip =", skip, ", limit =", limit);
 
   const pipeline: any[] = [];
 
@@ -28,6 +41,9 @@ const recordGetter = async (
     const result = resolveDateRange(filter);
     startDate = result.startDate;
     endDate = result.endDate;
+    console.log("[recordGetter] Date filter resolved:", { filterDateType: filter.filterDateType, startDate, endDate });
+  } else {
+    console.log("[recordGetter] No date filter applied");
   }
 
   /* --------------------------------------------------
@@ -41,10 +57,7 @@ const recordGetter = async (
   }
 
   if (pageType === "Newdata") {
-    ownerMatch.$or = [
-      { decision: { $exists: false } },
-      { decision: { $ne: "APPROVED" } },
-    ];
+    ownerMatch.$or = [{ decision: { $exists: false } }, { decision: { $ne: "APPROVED" } }];
   }
 
   if (Object.keys(ownerMatch).length > 0) {
@@ -95,6 +108,35 @@ const recordGetter = async (
   pipeline.push({
     $replaceRoot: { newRoot: "$doc" },
   });
+
+  /* --------------------------------------------------
+     3.5️⃣ EXCLUDE SPECIFIC OWNER-PROPERTY COMBINATIONS
+  -------------------------------------------------- */
+
+  if (excludedIds && excludedIds.length > 0) {
+    // excludedIds format: "ownerId_propertyId"
+    console.log("[recordGetter] Processing excludedIds:", excludedIds.length, "items");
+    const { ObjectId } = require("mongoose").Types;
+    const excludedCombinations = excludedIds.map((id) => {
+      const [ownerId, propertyId] = id.split("_");
+      console.log("[recordGetter] Excluding:", { raw: id, ownerId, propertyId });
+      return {
+        $and: [
+          { _id: new ObjectId(ownerId) },
+          { "property._id": new ObjectId(propertyId) },
+        ],
+      };
+    });
+
+    console.log("[recordGetter] $nor exclusion stage added with", excludedCombinations.length, "combinations");
+    pipeline.push({
+      $match: {
+        $nor: excludedCombinations,
+      },
+    });
+  } else {
+    console.log("[recordGetter] No excludedIds to process");
+  }
 
   /* --------------------------------------------------
    3.6️⃣ ADD MOST RECENT LIST UPDATE FIELD
@@ -185,7 +227,10 @@ const recordGetter = async (
   }
 
   if (Object.keys(propertyMatch).length > 0) {
+    console.log("[recordGetter] Property match filters:", JSON.stringify(propertyMatch, null, 2));
     pipeline.push({ $match: propertyMatch });
+  } else {
+    console.log("[recordGetter] No property match filters applied");
   }
 
   /* --------------------------------------------------
@@ -220,25 +265,36 @@ const recordGetter = async (
         },
       },
     });
-    pipeline.push({ $sort: { sortKey: sortOrderValue } });
+    // Add secondary sort keys (_id, property._id) for stable, deterministic ordering
+    pipeline.push({ $sort: { sortKey: sortOrderValue, _id: 1, "property._id": 1 } });
   } else {
     // Default sorting: use sortBy field or default to mostRecentListUpdate
     let sortField = "mostRecentListUpdate"; // default
 
     if (filter?.sortBy) {
-      if (filter.sortBy === "Date") {
+      if (filter.sortBy === "list_updatedAt") {
         sortField = "mostRecentListUpdate";
       } else if (filter.sortBy === "Name") {
         sortField = "owner_first_name";
       } else if (filter.sortBy === "Address") {
         sortField = "mailing_address";
+      } else if (filter.sortBy === "last_sale_date") {
+        // Property fields need the "property." prefix
+        sortField = "property.last_sale_date";
       } else {
         // Use sortBy value as-is for other fields
         sortField = filter.sortBy;
       }
     }
 
-    pipeline.push({ $sort: { [sortField]: sortOrderValue } });
+    console.log("[recordGetter] Sorting debug:", {
+      sortBy: filter?.sortBy,
+      sortField,
+      sortOrderValue,
+    });
+
+    // Add secondary sort keys (_id, property._id) for stable, deterministic ordering
+    pipeline.push({ $sort: { [sortField]: sortOrderValue, _id: 1, "property._id": 1 } });
   }
   /* --------------------------------------------------
      7️⃣ FINAL SHAPE
@@ -278,10 +334,32 @@ const recordGetter = async (
      9️⃣ EXECUTE
   -------------------------------------------------- */
 
+  console.log("[recordGetter] Executing pipeline with", pipeline.length, "stages");
+
   const result = await Owner.aggregate(pipeline);
 
   const items = result[0]?.data ?? [];
   const total = result[0]?.totalCount?.[0]?.count ?? 0;
+
+  console.log("[recordGetter] Results: items =", items.length, ", total =", total);
+  if (items.length > 0) {
+    console.log("[recordGetter] First 3 item IDs:", items.slice(0, 3).map((item: any) => ({
+      ownerId: item._id?.toString(),
+      propertyId: item.property?._id?.toString(),
+      combined: `${item._id?.toString()}_${item.property?._id?.toString()}`
+    })));
+
+    // Debug: Show last_sale_date values from first 5 items
+    console.log("[recordGetter] last_sale_date debug (first 5 items):", items.slice(0, 5).map((item: any) => ({
+      propertyId: item.property?._id?.toString(),
+      last_sale_date: item.property?.last_sale_date,
+      last_sale_date_type: typeof item.property?.last_sale_date,
+      last_sale_date_raw: item.property?.last_sale_date instanceof Date
+        ? item.property.last_sale_date.toISOString()
+        : String(item.property?.last_sale_date),
+    })));
+  }
+  console.log("========== [recordGetter] END ==========\n");
 
   return { items, total };
 };

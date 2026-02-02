@@ -124,7 +124,7 @@ export default async function editDetails(
     }
 
     // Process mailing address updates
-    if (type === "mailing") {
+    else if (type === "mailing") {
       const dbUpdateData: Record<string, string> = {};
       const modifiedFields: string[] = [];
 
@@ -134,20 +134,20 @@ export default async function editDetails(
       const mailingZip = sanitize(updateData.newMailingZip);
 
       if (mailingAddress) {
-        dbUpdateData.mailingAddress = mailingAddress;
-        modifiedFields.push("mailingAddress");
+        dbUpdateData["mailing_address"] = mailingAddress;
+        modifiedFields.push("mailing_address");
       }
       if (mailingCity) {
-        dbUpdateData.mailingCity = mailingCity;
-        modifiedFields.push("mailingCity");
+        dbUpdateData["mailing_city"] = mailingCity;
+        modifiedFields.push("mailing_city");
       }
       if (mailingState) {
-        dbUpdateData.mailingState = mailingState;
-        modifiedFields.push("mailingState");
+        dbUpdateData["mailing_state"] = mailingState;
+        modifiedFields.push("mailing_state");
       }
       if (mailingZip) {
-        dbUpdateData.mailingZip = mailingZip;
-        modifiedFields.push("mailingZip");
+        dbUpdateData["mailing_zip_code"] = mailingZip;
+        modifiedFields.push("mailing_zip_code");
       }
 
       if (Object.keys(dbUpdateData).length === 0) {
@@ -158,6 +158,7 @@ export default async function editDetails(
         };
       }
 
+      console.log(dbUpdateData);
       // Perform atomic update
       const result = await Owner.updateOne({ _id: ownerId }, { $set: dbUpdateData });
 
