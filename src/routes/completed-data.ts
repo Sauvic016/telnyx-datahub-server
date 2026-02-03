@@ -432,6 +432,10 @@ interface PhoneFilter {
   selectedTags?: string[];
   selectedCallerIds?: string[];
   selectedPhoneIndex?: number[];
+  excludedTags: string[];
+  excludedCallerIds: string[];
+  excludedPhoneIndex: number[];
+  andOr: "and" | "or";
 }
 
 interface ContactFilter {
@@ -582,12 +586,49 @@ async function createJobTargets(
   // Build phone query with filters
   const phoneWhereClause: any = { contact_id: { in: contactIds } };
 
+  // Build inclusion conditions
+  const inclusionConditions: any[] = [];
+
   if (phoneFilters?.selectedTags?.length) {
-    phoneWhereClause.phone_tags = { in: phoneFilters.selectedTags };
+    inclusionConditions.push({ phone_tags: { in: phoneFilters.selectedTags } });
   }
 
   if (phoneFilters?.selectedCallerIds?.length) {
-    phoneWhereClause.telynxLookup = { caller_id: { in: phoneFilters.selectedCallerIds } };
+    inclusionConditions.push({ telynxLookup: { caller_id: { in: phoneFilters.selectedCallerIds } } });
+  }
+
+  // Apply inclusion conditions based on andOr
+  if (inclusionConditions.length > 0) {
+    if (phoneFilters?.andOr === "or") {
+      phoneWhereClause.OR = inclusionConditions;
+    } else {
+      // AND logic - all conditions must be met
+      phoneWhereClause.AND = inclusionConditions;
+    }
+  }
+
+  // Build exclusion conditions (always applied with AND logic)
+  const exclusionConditions: any[] = [];
+
+  if (phoneFilters?.excludedTags?.length) {
+    exclusionConditions.push({
+      OR: [{ phone_tags: null }, { phone_tags: { notIn: phoneFilters.excludedTags } }],
+    });
+  }
+
+  if (phoneFilters?.excludedCallerIds?.length) {
+    exclusionConditions.push({
+      OR: [{ telynxLookup: null }, { telynxLookup: { caller_id: { notIn: phoneFilters.excludedCallerIds } } }],
+    });
+  }
+
+  // Apply exclusion conditions
+  if (exclusionConditions.length > 0) {
+    if (phoneWhereClause.AND) {
+      phoneWhereClause.AND.push(...exclusionConditions);
+    } else {
+      phoneWhereClause.AND = exclusionConditions;
+    }
   }
 
   const contactPhonesRaw = await prisma.contact_phones.findMany({
@@ -607,20 +648,22 @@ async function createJobTargets(
     phonesByContact.set(phone.contact_id, existing);
   }
 
-  // Apply selectedPhoneIndex filter if provided
+  // Apply phone index filters (selected and excluded)
   let filteredPhones: { id: string; contact_id: string }[] = [];
-  if (phoneFilters?.selectedPhoneIndex?.length) {
-    const indexSet = new Set(phoneFilters.selectedPhoneIndex);
-    for (const [, phones] of phonesByContact) {
-      for (let i = 0; i < phones.length; i++) {
-        if (indexSet.has(i)) {
-          filteredPhones.push(phones[i]);
-        }
+  const selectedIndexSet = phoneFilters?.selectedPhoneIndex?.length ? new Set(phoneFilters.selectedPhoneIndex) : null;
+  const excludedIndexSet = phoneFilters?.excludedPhoneIndex?.length ? new Set(phoneFilters.excludedPhoneIndex) : null;
+
+  for (const [, phones] of phonesByContact) {
+    for (let i = 0; i < phones.length; i++) {
+      // Check if index is selected (if no filter, all are selected)
+      const isSelected = selectedIndexSet ? selectedIndexSet.has(i) : true;
+      // Check if index is excluded
+      const isExcluded = excludedIndexSet ? excludedIndexSet.has(i) : false;
+
+      if (isSelected && !isExcluded) {
+        filteredPhones.push(phones[i]);
       }
     }
-  } else {
-    // No index filter, use all phones
-    filteredPhones = contactPhones.filter((p) => p.contact_id !== null) as { id: string; contact_id: string }[];
   }
 
   // Map contactId -> propertyId
@@ -698,7 +741,10 @@ router.post("/sms-drip-bulk", async (req, res) => {
     const hasPhoneFilter =
       (phoneFilters?.selectedTags?.length ?? 0) > 0 ||
       (phoneFilters?.selectedCallerIds?.length ?? 0) > 0 ||
-      (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
+      (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0 ||
+      (phoneFilters?.excludedTags?.length ?? 0) > 0 ||
+      (phoneFilters?.excludedCallerIds?.length ?? 0) > 0 ||
+      (phoneFilters?.excludedPhoneIndex?.length ?? 0) > 0;
 
     if (!hasPhoneFilter) {
       return res
@@ -831,7 +877,10 @@ router.post("/sms-drip-manual", async (req, res) => {
     const hasPhoneFilter =
       (phoneFilters?.selectedTags?.length ?? 0) > 0 ||
       (phoneFilters?.selectedCallerIds?.length ?? 0) > 0 ||
-      (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
+      (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0 ||
+      (phoneFilters?.excludedTags?.length ?? 0) > 0 ||
+      (phoneFilters?.excludedCallerIds?.length ?? 0) > 0 ||
+      (phoneFilters?.excludedPhoneIndex?.length ?? 0) > 0;
 
     if (!hasPhoneFilter) {
       return res

@@ -86,7 +86,6 @@ const recordGetterFast = async (
 
   // Apply the Match Stage
   if (Object.keys(match).length > 0) {
-    console.log("[recordGetterFast] Match criteria keys:", Object.keys(match));
     pipeline.push({ $match: match });
   }
 
