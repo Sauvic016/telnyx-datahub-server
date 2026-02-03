@@ -200,7 +200,7 @@ function extractPropertyAndOwnerData(
   row: unknown[],
   rowRecord: Record<string, any>,
   botId: number,
-  mongoToPropertyDetailsMap: Record<string, string>
+  mongoToPropertyDetailsMap: Record<string, string>,
 ): { propertyData: Record<string, any>; ownerData: Record<string, any>; lastSaleDate: Date | null } {
   const propertyData: Record<string, any> = {};
   const ownerData: Record<string, any> = {};
@@ -385,8 +385,11 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const rowRecord = buildRowRecord(cols, row, job.startedByBotId!);
 
           // Extract property and owner data
-          const { propertyData: extractedPropertyData, ownerData: extractedOwnerData, lastSaleDate } =
-            extractPropertyAndOwnerData(cols, row, rowRecord, job.startedByBotId!, mongoToPropertyDetailsMap);
+          const {
+            propertyData: extractedPropertyData,
+            ownerData: extractedOwnerData,
+            lastSaleDate,
+          } = extractPropertyAndOwnerData(cols, row, rowRecord, job.startedByBotId!, mongoToPropertyDetailsMap);
 
           // Build complete property and owner data objects
           const propertyData: Record<string, any> = {
@@ -410,7 +413,10 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           // Generate and set lists
           const generatedLists = generateList(job.startedByBotId!, rowRecord);
           const listNames = generatedLists
-            ? generatedLists.split(",").map((s: string) => s.trim()).filter((s: string) => s.length > 0)
+            ? generatedLists
+                .split(",")
+                .map((s: string) => s.trim())
+                .filter((s: string) => s.length > 0)
             : [];
 
           propertyData.currList = listNames.map((name: string) => ({
@@ -484,7 +490,6 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
   }
 };
 
-
 // ========== LIST GENERATION FUNCTIONS ==========
 
 function parseNumeric(value: any): number | null {
@@ -519,10 +524,8 @@ function isSaleDateTodayOrFuture(value: any): boolean {
 
 function generateList(startedByBotId: number, record: any): string {
   if (!BOTMAP[startedByBotId] || !BOTMAP[startedByBotId]?.flow) return "";
-  const lists = BOTMAP[startedByBotId].flow
-    .map(botId => filterList(botId, record))
-    .filter(list => list.trim());
-  return lists.join(", ")
+  const lists = BOTMAP[startedByBotId].flow.map((botId) => filterList(botId, record)).filter((list) => list.trim());
+  return lists.join(", ");
 }
 
 function filterList(botId: number, record: any): string {
@@ -533,25 +536,29 @@ function filterList(botId: number, record: any): string {
     const lastBilledAmount = parseNumeric(record[`bot_${botId}_last_billed_amount`]);
 
     if (waterUsage !== null && lastBilledAmount !== null && waterUsage === 0 && lastBilledAmount === 0) {
-      lists.push("Akron Water Shutoff")
+      lists.push("Akron Water Shutoff");
     }
 
     if (waterUsage !== null && waterUsage === 0) {
-      lists.push("Akron Delinquent Water Bill")
+      lists.push("Akron Delinquent Water Bill");
     }
   } else if (botId === 2) {
-    const saleDate = record[`${botId}_sale_date`];
+    const saleDate = record[`bot_${botId}_sale_date`];
     if (isSaleDateTodayOrFuture(saleDate)) {
       lists.push("Foreclosure");
     }
   } else if (botId === 3) {
-    lists.push("Notice of Default")
+    lists.push("Notice of Default");
   } else if (botId === 4 || botId === 5) {
     const delinquentContract = record[`bot_${botId}_delinquent_contract`]?.trim?.();
     const taxDelinquentAmount = parseNumeric(record[`bot_${botId}_tax_delinquent_amount`]);
     const payDelinquentTaxes = parseNumeric(record[`bot_${botId}_pay_delinquent_taxes`]);
 
-    if (delinquentContract || (taxDelinquentAmount !== null && taxDelinquentAmount >= 300) || (payDelinquentTaxes !== null && payDelinquentTaxes >= 300)) {
+    if (
+      delinquentContract ||
+      (taxDelinquentAmount !== null && taxDelinquentAmount >= 300) ||
+      (payDelinquentTaxes !== null && payDelinquentTaxes >= 300)
+    ) {
       lists.push("Tax Delinquent");
     }
 
@@ -571,10 +578,10 @@ function filterList(botId: number, record: any): string {
 
     // Check for Special Assessments with special codes
     const hasSpecialAssessment = Object.keys(record)
-      .filter(key => key.startsWith(`bot_${botId}_special_assessment_amount`))
-      .some(key => {
+      .filter((key) => key.startsWith(`bot_${botId}_special_assessment_amount`))
+      .some((key) => {
         const value = String(record[key] ?? "").trim();
-        return value && Array.from(SUMMITOH_SPECIAL_CODES).some(code => value.includes(code));
+        return value && Array.from(SUMMITOH_SPECIAL_CODES).some((code) => value.includes(code));
       });
 
     if (hasSpecialAssessment) {
@@ -587,10 +594,7 @@ function filterList(botId: number, record: any): string {
 
 // ========== BULK OPERATION HELPERS ==========
 
-async function bulkUpsertProperties(
-  updatedPropertyMap: Map<string, any>,
-  job: any
-): Promise<any> {
+async function bulkUpsertProperties(updatedPropertyMap: Map<string, any>, job: any): Promise<any> {
   const bulkOps = Array.from(updatedPropertyMap.entries()).map(([identityKey, data]) => ({
     updateOne: {
       filter: { identityKey },
@@ -624,7 +628,7 @@ async function bulkUpsertProperties(
 async function bulkUpdateOwners(
   updatedOwnerMap: Map<string, any>,
   ownerIdentityKeyToPropertyMap: Map<string, any[]>,
-  job: any
+  job: any,
 ): Promise<void> {
   const identityKeys = Array.from(updatedOwnerMap.keys());
   const existingOwners = await Owner.find({ identityKey: { $in: identityKeys } }, { identityKey: 1 }).lean();
