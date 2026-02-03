@@ -77,4 +77,10 @@ const PropertyDataSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// Indexes for optimized aggregation (Fast Record Getter)
+PropertyDataSchema.index({ "currList.list_updated_at": -1 });
+PropertyDataSchema.index({ clean: 1, "currList.list_updated_at": -1 });
+PropertyDataSchema.index({ botId: 1 });
+PropertyDataSchema.index({ last_sale_date: -1 });
+
 export const PropertyData = mongoose.model("PropertyData", PropertyDataSchema);

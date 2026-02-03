@@ -2,6 +2,8 @@ import { Router } from "express";
 import { sendApprovedToDirectSkip } from "../services/directskip-batch";
 import prisma from "../db";
 import recordGetter from "../services/contacts-check";
+import recordGetterFast from "../services/contacts-check-fast";
+import recordGetterTest from "../services/contacts-check-test";
 import { BOTMAP } from "../utils/constants";
 import editDetails from "../services/edit-details";
 import { ProcessingStage } from "../generated/prisma/enums";
@@ -50,7 +52,30 @@ router.get("/", async (req, res) => {
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
       }).filter(([_, v]) => v !== undefined),
     );
-    const { items, total } = await recordGetter(startIndex, limit, "Records", dataType, filterObject);
+
+    // Determine which getter to use
+    const slowSorts = ["Name", "Address", "first_name", "last_name", "mailing_address", "owner_first_name"];
+    const useFast = !slowSorts.includes(sortBy as string);
+    const useTest = req.query.mode === "test";
+
+    let items, total;
+
+    if (useTest) {
+      console.log("[/records] Using TEST getter (No Sorting)");
+      const result = await recordGetterTest(startIndex, limit, "Records", dataType, filterObject);
+      items = result.items;
+      total = result.total;
+    } else if (useFast) {
+      console.log("[/records] Using FAST getter");
+      const result = await recordGetterFast(startIndex, limit, "Records", dataType, filterObject);
+      items = result.items;
+      total = result.total;
+    } else {
+      console.log("[/records] Using SLOW getter (fallback)");
+      const result = await recordGetter(startIndex, limit, "Records", dataType, filterObject);
+      items = result.items;
+      total = result.total;
+    }
 
     const getLists = await prisma.list.findMany({});
     const propertyStatuses = await prisma.propertyStatus.findMany();
