@@ -7,6 +7,7 @@ import editDetails from "../services/edit-details";
 import { ProcessingStage } from "../generated/prisma/enums";
 import { Owner } from "../models/Owner";
 import { PropertyData } from "../models/PropertyData";
+import recordGetterFast from "../services/contacts-check-fast";
 
 const router = Router();
 
@@ -50,7 +51,7 @@ router.get("/", async (req, res) => {
         botId: startedByBotParam ? Number(startedByBotParam) : undefined,
       }).filter(([_, v]) => v !== undefined),
     );
-    const { items, total } = await recordGetter(startIndex, limit, "Newdata", dataType, filterObject);
+    const { items, total } = await recordGetterFast(startIndex, limit, "Newdata", dataType, filterObject);
 
     const getLists = await prisma.list.findMany({});
     const propertyStatuses = await prisma.propertyStatus.findMany();
