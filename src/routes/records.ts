@@ -148,7 +148,14 @@ router.post("/decisions", async (req, res) => {
       //   filterObject,
       //   excludedIdsCount: excludedIds?.length,
       // });
-      const { items, total } = await recordGetter(startIndex, limit, "Decision", dataType, filterObject, excludedIds);
+      const { items, total } = await recordGetterFast(
+        startIndex,
+        limit,
+        "Decision",
+        dataType,
+        filterObject,
+        excludedIds,
+      );
       // console.log("[/decisions] recordGetter returned:", { itemsCount: items.length, total });
 
       ownerIdList = items.map((r: any) => r._id.toString());
@@ -223,7 +230,6 @@ router.post("/decisions", async (req, res) => {
       success: true,
       summary: {
         total: totalKeyList.length,
-        totalKeyList,
       },
       message: `${totalKeyList.length} record(s) queued for DirectSkip processing.`,
     });
@@ -364,7 +370,14 @@ router.post("/delete", async (req, res) => {
           botId: startedByBot ? Number(startedByBot) : undefined,
         }).filter(([_, v]) => v !== undefined),
       );
-      const { items, total } = await recordGetter(startIndex, limit, "Decision", dataType, filterObject, excludedIds);
+      const { items, total } = await recordGetterFast(
+        startIndex,
+        limit,
+        "Decision",
+        dataType,
+        filterObject,
+        excludedIds,
+      );
 
       ownerIdList = items.map((r: any) => r._id.toString());
       totalKeyList = items
