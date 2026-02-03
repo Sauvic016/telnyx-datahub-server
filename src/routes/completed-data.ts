@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { CompletedRecordsFilters, fetchCompletedRecords } from "../services/completed-data";
 import { getValidParam } from "../utils/query-params";
 import { parseAmPmTime, isInTimeSlot } from "../utils/helper";
+import { sortContactPhonesByTag } from "../utils/completed-formatter";
 import prisma from "../db";
 
 const router = Router();
@@ -589,18 +590,20 @@ async function createJobTargets(
     phoneWhereClause.telynxLookup = { caller_id: { in: phoneFilters.selectedCallerIds } };
   }
 
-  const contactPhones = await prisma.contact_phones.findMany({
+  const contactPhonesRaw = await prisma.contact_phones.findMany({
     where: phoneWhereClause,
-    select: { id: true, contact_id: true },
-    orderBy: { id: "asc" }, // Consistent ordering for index selection
+    select: { id: true, contact_id: true, phone_tags: true },
   });
 
+  // Sort phones by DS tags (DS1, DS2, etc. come first in order)
+  const contactPhones = sortContactPhonesByTag(contactPhonesRaw);
+
   // Group phones by contact_id for index filtering
-  const phonesByContact = new Map<string, { id: string; contact_id: string }[]>();
+  const phonesByContact = new Map<string, { id: string; contact_id: string; phone_tags: string | null }[]>();
   for (const phone of contactPhones) {
     if (!phone.contact_id) continue;
     const existing = phonesByContact.get(phone.contact_id) || [];
-    existing.push(phone as { id: string; contact_id: string });
+    existing.push(phone as { id: string; contact_id: string; phone_tags: string | null });
     phonesByContact.set(phone.contact_id, existing);
   }
 

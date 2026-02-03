@@ -3,6 +3,39 @@ import { PropertyData } from "../models/PropertyData";
 import prisma from "../db";
 import { Pipeline, Prisma } from "../generated/prisma/client";
 import { Activity } from "../services/completed-data";
+
+// ============ HELPERS ============
+
+export const sortContactPhonesByTag = (phones: any[]): any[] => {
+  if (!phones || phones.length === 0) return phones;
+
+  // Check if any phone has phone_tags with DS pattern
+  const hasAnyDSTags = phones.some((phone) => phone.phone_tags && /^DS\d+$/i.test(phone.phone_tags));
+
+  // If no DS tags found, return as-is
+  if (!hasAnyDSTags) return phones;
+
+  return [...phones].sort((a, b) => {
+    const tagA = a.phone_tags || "";
+    const tagB = b.phone_tags || "";
+
+    const matchA = tagA.match(/^DS(\d+)$/i);
+    const matchB = tagB.match(/^DS(\d+)$/i);
+
+    // If both have DS tags, sort by number
+    if (matchA && matchB) {
+      return parseInt(matchA[1]) - parseInt(matchB[1]);
+    }
+
+    // DS tags come before non-DS tags
+    if (matchA) return -1;
+    if (matchB) return 1;
+
+    // Both don't have DS tags, keep original order
+    return 0;
+  });
+};
+
 // ============ TYPES ============
 
 interface FormattedContactPhone {
@@ -198,20 +231,22 @@ const formatRelatives = (contact: any): FormattedRelative[] => {
 };
 
 const formatPhones = (phones: any[] | null | undefined): FormattedContactPhone[] =>
-  (phones ?? []).map((phone) => {
-    // const activity = phone.phone_number ? phoneActivityMap.get(phone.phone_number) : undefined;
+  sortContactPhonesByTag(
+    (phones ?? []).map((phone) => {
+      // const activity = phone.phone_number ? phoneActivityMap.get(phone.phone_number) : undefined;
 
-    return {
-      id: phone.id,
-      phone_number: phone.phone_number ?? null,
-      phone_type: phone.phone_type ?? null,
-      phone_status: phone.phone_status ?? null,
-      phone_tags: phone.phone_tags ?? null,
-      callerId: phone.telynxLookup?.caller_id ?? null,
-      isLookedUp: !!phone.telynxLookup,
-      telynxLookup: phone.telynxLookup ?? null,
-    };
-  });
+      return {
+        id: phone.id,
+        phone_number: phone.phone_number ?? null,
+        phone_type: phone.phone_type ?? null,
+        phone_status: phone.phone_status ?? null,
+        phone_tags: phone.phone_tags ?? null,
+        callerId: phone.telynxLookup?.caller_id ?? null,
+        isLookedUp: !!phone.telynxLookup,
+        telynxLookup: phone.telynxLookup ?? null,
+      };
+    }),
+  );
 
 const formatPrismaPropertyDetails = (propertyDetails: any): FormattedPropertyDetails => {
   if (!propertyDetails || Object.keys(propertyDetails).length === 0) {
