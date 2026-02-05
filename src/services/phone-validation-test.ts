@@ -67,8 +67,8 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
       telnyxResult = await lookupSingleNumber(e164);
 
       // Check if it's a rate limit error
-      const isRateLimitError = telnyxResult.error?.includes("Too many requests") || 
-                               telnyxResult.error?.includes("exceeded the maximum");
+      const isRateLimitError = telnyxResult.error?.includes("Too many requests") ||
+        telnyxResult.error?.includes("exceeded the maximum");
 
       if (telnyxResult.success || !isRateLimitError) {
         break; // Success or non-rate-limit error, exit retry loop
@@ -125,7 +125,7 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
       phoneId = existingForContact?.id ?? candidatePhoneId;
 
       // Upsert the Telnyx lookup record
-      await tx.telynxLookup.upsert({
+      const lookupRecord = await tx.telynxLookup.upsert({
         where: { phone_number: e164 },
         update: {
           updatedAt: new Date(),
@@ -199,16 +199,6 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
           portability_state: telnyxResult.data!.portability?.state,
         },
       });
-
-      // Explicitly fetch the record to get the ID (needed because upsert doesn't always return ID reliably on update)
-      const lookupRecord = await tx.telynxLookup.findUnique({
-        where: { phone_number: e164 },
-        select: { id: true },
-      });
-
-      if (!lookupRecord) {
-        throw new Error(`Failed to find TelynxLookup record for ${e164} after upsert`);
-      }
 
       console.log(`[PhoneValidation] TelynxLookup record ID: ${lookupRecord.id} for phone ${e164}`);
       console.log(`[PhoneValidation] About to ${existingForContact ? 'UPDATE' : 'CREATE'} contact_phones with telynxLookupId: ${lookupRecord.id}`);

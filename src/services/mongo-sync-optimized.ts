@@ -429,9 +429,9 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const generatedLists = generateList(job.startedByBotId!, rowRecord);
           const listNames = generatedLists
             ? generatedLists
-                .split(",")
-                .map((s: string) => s.trim())
-                .filter((s: string) => s.length > 0)
+              .split(",")
+              .map((s: string) => s.trim())
+              .filter((s: string) => s.length > 0)
             : [];
 
           propertyData.currList = listNames.map((name: string) => ({
@@ -549,12 +549,13 @@ function filterList(botId: number, record: any): string {
   if (botId === 1) {
     const waterUsage = parseNumeric(record[`bot_${botId}_water_usage_current_month`]);
     const lastBilledAmount = parseNumeric(record[`bot_${botId}_last_billed_amount`]);
+    const totalPastDue = parseNumeric(record[`bot_${botId}_total_past_due`]);
 
     if (waterUsage !== null && lastBilledAmount !== null && waterUsage === 0 && lastBilledAmount === 0) {
       lists.push("Akron Water Shutoff");
     }
 
-    if (waterUsage !== null && waterUsage === 0) {
+    if (totalPastDue !== null && totalPastDue >= 150) {
       lists.push("Akron Delinquent Water Bill");
     }
   } else if (botId === 2) {
