@@ -69,6 +69,7 @@ const mongoToPropertyDetailsMap: Record<string, string> = {
   // ─── SALE HISTORY ───────────────────────────────
   last_sale_price: "last_sale_price",
   last_sold: "last_sale_date",
+  sale_date: "sale_date",
   last_sale_date: "last_sale_date", // CSV variation
   previous_sale_date: "previous_sale_date",
   previous_sale_price: "previous_sale_price",
@@ -201,10 +202,16 @@ function extractPropertyAndOwnerData(
   rowRecord: Record<string, any>,
   botId: number,
   mongoToPropertyDetailsMap: Record<string, string>,
-): { propertyData: Record<string, any>; ownerData: Record<string, any>; lastSaleDate: Date | null } {
+): {
+  propertyData: Record<string, any>;
+  ownerData: Record<string, any>;
+  lastSaleDate: Date | null;
+  saleDate: Date | null;
+} {
   const propertyData: Record<string, any> = {};
   const ownerData: Record<string, any> = {};
   let lastSaleDate: Date | null = null;
+  let saleDate: Date | null = null;
 
   cols.forEach((col, idx) => {
     const value = row[idx];
@@ -222,6 +229,12 @@ function extractPropertyAndOwnerData(
         lastSaleDate = isValid(parsed) ? parsed : null;
       }
     }
+    if (colNameWithoutBotPrefix === "Sale_date" || colNameWithoutBotPrefix === "sale_date") {
+      if (value) {
+        const parsed = parse(String(value).trim(), "MM/dd/yyyy", new Date());
+        saleDate = isValid(parsed) ? parsed : null;
+      }
+    }
 
     // Distribute data to property or owner
     if (colNameWithoutBotPrefix in mongoToPropertyDetailsMap) {
@@ -231,7 +244,7 @@ function extractPropertyAndOwnerData(
     }
   });
 
-  return { propertyData, ownerData, lastSaleDate };
+  return { propertyData, ownerData, lastSaleDate, saleDate };
 }
 
 export const syncScrappedDataOptimized = async (manual?: boolean) => {
@@ -251,7 +264,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
       const filePath = path.join(process.cwd(), "job_result", fileName);
 
       if (!fs.existsSync(filePath)) {
-        console.warn(`File not found for job ${job.jobId}: ${filePath}`);
+        // console.warn(`File not found for job ${job.jobId}: ${filePath}`);
         continue;
       }
 
@@ -389,6 +402,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             propertyData: extractedPropertyData,
             ownerData: extractedOwnerData,
             lastSaleDate,
+            saleDate,
           } = extractPropertyAndOwnerData(cols, row, rowRecord, job.startedByBotId!, mongoToPropertyDetailsMap);
 
           // Build complete property and owner data objects
@@ -399,6 +413,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             clean: isPropertyClean,
             last_sale_date: lastSaleDate,
             isListChanged: false,
+            sale_date: saleDate,
           };
 
           const ownerData: Record<string, any> = {

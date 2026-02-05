@@ -48,7 +48,7 @@ export const getAllJobs = async (): Promise<BotJobs[]> => {
   });
 };
 export const getAllJobsAfterLastSync = async (): Promise<BotJobs[]> => {
-  const lastSyncedAt = new Date("2026-01-07T18:16:33Z");
+  const lastSyncedAt = new Date("2026-02-01T18:16:33Z");
 
   return prisma.botJobs.findMany({
     where: {
@@ -203,7 +203,7 @@ export function isInTimeSlot(timeSlots: { startTime: Date; endTime: Date }[]): b
   const currentMinutes = now.getMinutes();
   const currentTimeMinutes = currentHours * 60 + currentMinutes;
 
-  return timeSlots.some(slot => {
+  return timeSlots.some((slot) => {
     const startHours = slot.startTime.getHours();
     const startMinutes = slot.startTime.getMinutes();
     const startTimeMinutes = startHours * 60 + startMinutes;

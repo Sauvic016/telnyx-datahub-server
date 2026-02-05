@@ -7,3 +7,7 @@ dist/
 *.txt
 
 *.json
+
+*.gz
+*.dump
+*pg_2026-02-03.sql/

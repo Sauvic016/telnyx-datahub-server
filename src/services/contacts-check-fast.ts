@@ -106,7 +106,7 @@ const recordGetterFast = async (
   }
 
   // Special case: Newdata page with listName filter sorting
-  if (pageType === "Newdata" && filter?.listName) {
+  if (pageType === "Newdata" && filter?.listName && !filter?.sortBy) {
     pipeline.push({
       $addFields: {
         sortKey: {
