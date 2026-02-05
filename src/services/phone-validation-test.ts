@@ -110,125 +110,134 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
 
     let phoneId!: string;
 
-    await prisma.$transaction(async (tx) => {
-      // Use last 10 digits for flexible matching (same approach as saveDirectSkipContacts)
-      const last10 = normalized.slice(-10);
-      const existingForContact = await tx.contact_phones.findFirst({
-        where: {
-          contact_id: contactId,
-          phone_number: {
-            endsWith: last10,
-          },
+    // Step 1: Check for existing phone for this contact
+    const last10 = normalized.slice(-10);
+    const existingForContact = await prisma.contact_phones.findFirst({
+      where: {
+        contact_id: contactId,
+        phone_number: {
+          endsWith: last10,
         },
-      });
-
-      phoneId = existingForContact?.id ?? candidatePhoneId;
-
-      // Upsert the Telnyx lookup record
-      const lookupRecord = await tx.telynxLookup.upsert({
-        where: { phone_number: e164 },
-        update: {
-          updatedAt: new Date(),
-          caller_id: callerId,
-
-          country_code: telnyxResult.data!.country_code,
-          national_format: telnyxResult.data!.national_format,
-          record_type: telnyxResult.data!.record_type,
-
-          caller_name_caller_name: telnyxResult.data!.caller_name?.caller_name,
-          caller_name_error_code: telnyxResult.data!.caller_name?.error_code,
-
-          carrier_error_code: telnyxResult.data!.carrier?.error_code,
-          carrier_mobile_country_code: telnyxResult.data!.carrier?.mobile_country_code,
-          carrier_mobile_network_code: telnyxResult.data!.carrier?.mobile_network_code
-            ? Number(telnyxResult.data!.carrier.mobile_network_code)
-            : null,
-          carrier_name: telnyxResult.data!.carrier?.name,
-          carrier_type: telnyxResult.data!.carrier?.type,
-
-          portability_altspid: telnyxResult.data!.portability?.altspid,
-          portability_altspid_carrier_name: telnyxResult.data!.portability?.altspid_carrier_name,
-          portability_altspid_carrier_type: telnyxResult.data!.portability?.altspid_carrier_type,
-          portability_city: telnyxResult.data!.portability?.city,
-          portability_line_type: telnyxResult.data!.portability?.line_type,
-          portability_lrn: telnyxResult.data!.portability?.lrn,
-          portability_ocn: telnyxResult.data!.portability?.ocn,
-          portability_ported_date: telnyxResult.data!.portability?.ported_date
-            ? new Date(telnyxResult.data!.portability.ported_date)
-            : null,
-          portability_ported_status: telnyxResult.data!.portability?.ported_status,
-          portability_spid: telnyxResult.data!.portability?.spid,
-          portability_spid_carrier_name: telnyxResult.data!.portability?.spid_carrier_name,
-          portability_spid_carrier_type: telnyxResult.data!.portability?.spid_carrier_type,
-          portability_state: telnyxResult.data!.portability?.state,
-        },
-        create: {
-          phone_number: e164,
-
-          country_code: telnyxResult.data!.country_code,
-          national_format: telnyxResult.data!.national_format,
-          record_type: telnyxResult.data!.record_type,
-
-          caller_name_caller_name: telnyxResult.data!.caller_name?.caller_name,
-          caller_name_error_code: telnyxResult.data!.caller_name?.error_code,
-
-          caller_id: callerId,
-
-          carrier_error_code: telnyxResult.data!.carrier?.error_code,
-          carrier_mobile_country_code: telnyxResult.data!.carrier?.mobile_country_code,
-          carrier_mobile_network_code: telnyxResult.data!.carrier?.mobile_network_code
-            ? Number(telnyxResult.data!.carrier.mobile_network_code)
-            : null,
-          carrier_name: telnyxResult.data!.carrier?.name,
-          carrier_type: telnyxResult.data!.carrier?.type,
-
-          portability_altspid: telnyxResult.data!.portability?.altspid,
-          portability_altspid_carrier_name: telnyxResult.data!.portability?.altspid_carrier_name,
-          portability_altspid_carrier_type: telnyxResult.data!.portability?.altspid_carrier_type,
-          portability_city: telnyxResult.data!.portability?.city,
-          portability_line_type: telnyxResult.data!.portability?.line_type,
-          portability_lrn: telnyxResult.data!.portability?.lrn,
-          portability_ocn: telnyxResult.data!.portability?.ocn,
-          portability_ported_date: telnyxResult.data!.portability?.ported_date
-            ? new Date(telnyxResult.data!.portability.ported_date)
-            : null,
-          portability_ported_status: telnyxResult.data!.portability?.ported_status,
-          portability_spid: telnyxResult.data!.portability?.spid,
-          portability_spid_carrier_name: telnyxResult.data!.portability?.spid_carrier_name,
-          portability_spid_carrier_type: telnyxResult.data!.portability?.spid_carrier_type,
-          portability_state: telnyxResult.data!.portability?.state,
-        },
-      });
-
-      console.log(`[PhoneValidation] TelynxLookup record ID: ${lookupRecord.id} for phone ${e164}`);
-      console.log(`[PhoneValidation] About to ${existingForContact ? 'UPDATE' : 'CREATE'} contact_phones with telynxLookupId: ${lookupRecord.id}`);
-
-      if (existingForContact) {
-        const updated = await tx.contact_phones.update({
-          where: { id: existingForContact.id },
-          data: {
-            phone_number: e164,
-            phone_status: "active",
-            phone_tags: phoneTag,
-            telynxLookupId: lookupRecord.id,
-          },
-        });
-        console.log(`[PhoneValidation] Updated contact_phones ID: ${updated.id}, telynxLookupId set to: ${updated.telynxLookupId}`);
-      } else {
-        const created = await tx.contact_phones.create({
-          data: {
-            id: phoneId,
-            contact_id: contactId,
-            phone_number: e164,
-            phone_type: phoneType,
-            phone_status: "active",
-            phone_tags: phoneTag,
-            telynxLookupId: lookupRecord.id,
-          },
-        });
-        console.log(`[PhoneValidation] Created contact_phones ID: ${created.id}, telynxLookupId set to: ${created.telynxLookupId}`);
-      }
+      },
     });
+
+    phoneId = existingForContact?.id ?? candidatePhoneId;
+
+    // Step 2: Upsert the Telnyx lookup record (do this FIRST, outside transaction)
+    await prisma.telynxLookup.upsert({
+      where: { phone_number: e164 },
+      update: {
+        updatedAt: new Date(),
+        caller_id: callerId,
+
+        country_code: telnyxResult.data!.country_code,
+        national_format: telnyxResult.data!.national_format,
+        record_type: telnyxResult.data!.record_type,
+
+        caller_name_caller_name: telnyxResult.data!.caller_name?.caller_name,
+        caller_name_error_code: telnyxResult.data!.caller_name?.error_code,
+
+        carrier_error_code: telnyxResult.data!.carrier?.error_code,
+        carrier_mobile_country_code: telnyxResult.data!.carrier?.mobile_country_code,
+        carrier_mobile_network_code: telnyxResult.data!.carrier?.mobile_network_code
+          ? Number(telnyxResult.data!.carrier.mobile_network_code)
+          : null,
+        carrier_name: telnyxResult.data!.carrier?.name,
+        carrier_type: telnyxResult.data!.carrier?.type,
+
+        portability_altspid: telnyxResult.data!.portability?.altspid,
+        portability_altspid_carrier_name: telnyxResult.data!.portability?.altspid_carrier_name,
+        portability_altspid_carrier_type: telnyxResult.data!.portability?.altspid_carrier_type,
+        portability_city: telnyxResult.data!.portability?.city,
+        portability_line_type: telnyxResult.data!.portability?.line_type,
+        portability_lrn: telnyxResult.data!.portability?.lrn,
+        portability_ocn: telnyxResult.data!.portability?.ocn,
+        portability_ported_date: telnyxResult.data!.portability?.ported_date
+          ? new Date(telnyxResult.data!.portability.ported_date)
+          : null,
+        portability_ported_status: telnyxResult.data!.portability?.ported_status,
+        portability_spid: telnyxResult.data!.portability?.spid,
+        portability_spid_carrier_name: telnyxResult.data!.portability?.spid_carrier_name,
+        portability_spid_carrier_type: telnyxResult.data!.portability?.spid_carrier_type,
+        portability_state: telnyxResult.data!.portability?.state,
+      },
+      create: {
+        phone_number: e164,
+
+        country_code: telnyxResult.data!.country_code,
+        national_format: telnyxResult.data!.national_format,
+        record_type: telnyxResult.data!.record_type,
+
+        caller_name_caller_name: telnyxResult.data!.caller_name?.caller_name,
+        caller_name_error_code: telnyxResult.data!.caller_name?.error_code,
+
+        caller_id: callerId,
+
+        carrier_error_code: telnyxResult.data!.carrier?.error_code,
+        carrier_mobile_country_code: telnyxResult.data!.carrier?.mobile_country_code,
+        carrier_mobile_network_code: telnyxResult.data!.carrier?.mobile_network_code
+          ? Number(telnyxResult.data!.carrier.mobile_network_code)
+          : null,
+        carrier_name: telnyxResult.data!.carrier?.name,
+        carrier_type: telnyxResult.data!.carrier?.type,
+
+        portability_altspid: telnyxResult.data!.portability?.altspid,
+        portability_altspid_carrier_name: telnyxResult.data!.portability?.altspid_carrier_name,
+        portability_altspid_carrier_type: telnyxResult.data!.portability?.altspid_carrier_type,
+        portability_city: telnyxResult.data!.portability?.city,
+        portability_line_type: telnyxResult.data!.portability?.line_type,
+        portability_lrn: telnyxResult.data!.portability?.lrn,
+        portability_ocn: telnyxResult.data!.portability?.ocn,
+        portability_ported_date: telnyxResult.data!.portability?.ported_date
+          ? new Date(telnyxResult.data!.portability.ported_date)
+          : null,
+        portability_ported_status: telnyxResult.data!.portability?.ported_status,
+        portability_spid: telnyxResult.data!.portability?.spid,
+        portability_spid_carrier_name: telnyxResult.data!.portability?.spid_carrier_name,
+        portability_spid_carrier_type: telnyxResult.data!.portability?.spid_carrier_type,
+        portability_state: telnyxResult.data!.portability?.state,
+      },
+    });
+
+    // Step 3: Fetch the lookup record to get the ID
+    const lookupRecord = await prisma.telynxLookup.findUnique({
+      where: { phone_number: e164 },
+      select: { id: true },
+    });
+
+    if (!lookupRecord) {
+      throw new Error(`Failed to find TelynxLookup record for ${e164} after upsert`);
+    }
+
+    console.log(`[PhoneValidation] TelynxLookup record ID: ${lookupRecord.id} for phone ${e164}`);
+    console.log(`[PhoneValidation] About to ${existingForContact ? 'UPDATE' : 'CREATE'} contact_phones with telynxLookupId: ${lookupRecord.id}`);
+
+    // Step 4: Update or create the contact_phones record with the foreign key
+    if (existingForContact) {
+      const updated = await prisma.contact_phones.update({
+        where: { id: existingForContact.id },
+        data: {
+          phone_number: e164,
+          phone_status: "active",
+          phone_tags: phoneTag,
+          telynxLookupId: lookupRecord.id,
+        },
+      });
+      console.log(`[PhoneValidation] Updated contact_phones ID: ${updated.id}, telynxLookupId set to: ${updated.telynxLookupId}`);
+    } else {
+      const created = await prisma.contact_phones.create({
+        data: {
+          id: phoneId,
+          contact_id: contactId,
+          phone_number: e164,
+          phone_type: phoneType,
+          phone_status: "active",
+          phone_tags: phoneTag,
+          telynxLookupId: lookupRecord.id,
+        },
+      });
+      console.log(`[PhoneValidation] Created contact_phones ID: ${created.id}, telynxLookupId set to: ${created.telynxLookupId}`);
+    }
 
     console.log(`[PhoneValidation] Successfully validated and stored ${normalized} for contact ${contactId}`);
 

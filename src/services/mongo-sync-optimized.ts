@@ -429,9 +429,9 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const generatedLists = generateList(job.startedByBotId!, rowRecord);
           const listNames = generatedLists
             ? generatedLists
-              .split(",")
-              .map((s: string) => s.trim())
-              .filter((s: string) => s.length > 0)
+                .split(",")
+                .map((s: string) => s.trim())
+                .filter((s: string) => s.length > 0)
             : [];
 
           propertyData.currList = listNames.map((name: string) => ({
@@ -579,7 +579,8 @@ function filterList(botId: number, record: any): string {
     }
 
     const taxLien = record[`bot_${botId}_tax_lien`]?.trim?.().toLowerCase();
-    if (taxLien && ["foreclosure", "tax"].includes(taxLien)) {
+
+    if (taxLien && /(tax|foreclosure)/i.test(taxLien)) {
       lists.push("Tax Lien");
     }
 
@@ -594,7 +595,7 @@ function filterList(botId: number, record: any): string {
 
     // Check for Special Assessments with special codes
     const hasSpecialAssessment = Object.keys(record)
-      .filter((key) => key.startsWith(`bot_${botId}_special_assessment_amount`))
+      .filter((key) => key.startsWith(`bot_${botId}_special_assessments`))
       .some((key) => {
         const value = String(record[key] ?? "").trim();
         return value && Array.from(SUMMITOH_SPECIAL_CODES).some((code) => value.includes(code));

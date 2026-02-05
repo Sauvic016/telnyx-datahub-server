@@ -66,11 +66,7 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
         const contactMap = await saveDirectSkipContacts(response, ownerId, poBoxAddress);
 
         // 2.5 Resolve ownership (check for owner2 from MongoDB)
-        const ownershipResult = await resolveOwnershipContacts(
-          ownerId,
-          contactMap.mainContactId,
-          response,
-        );
+        const ownershipResult = await resolveOwnershipContacts(ownerId, contactMap.mainContactId, response);
 
         // 2.6 Save Property Details and Lists from MongoDB
         let propertyDetailsId;
@@ -104,13 +100,13 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
 
             if (ownershipResult.owner2HasPhones) {
               console.log(`[SkipTraceProcessing] Adding owner2 phones for validation (owner deceased)`);
-              // phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
-              // Re-map owner2 phones to assign DS tags starting from 1
+              // Re-map owner2 phones to assign DS tags starting from 1 (separate from owner1)
+              let owner2DsCount = 0;
               for (const phone of ownershipResult.owner2PhonesToValidate) {
-                dsCount++;
+                owner2DsCount++;
                 phonesToValidate.push({
-                    ...phone,
-                    phoneTag: `DS${dsCount}`
+                  ...phone,
+                  phoneTag: `DS${owner2DsCount}`,
                 });
               }
             }
@@ -151,12 +147,13 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
             // Also add owner2's first 2 phones for validation (if present)
             if (ownershipResult.owner2PhonesToValidate.length > 0) {
               console.log(`[SkipTraceProcessing] Adding owner2 phones to validation queue (owner alive)`);
-              // phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
-               for (const phone of ownershipResult.owner2PhonesToValidate) {
-                dsCount++;
+              // Re-map owner2 phones to assign DS tags starting from 1 (separate from owner1)
+              let owner2DsCount = 0;
+              for (const phone of ownershipResult.owner2PhonesToValidate) {
+                owner2DsCount++;
                 phonesToValidate.push({
-                    ...phone,
-                    phoneTag: `DS${dsCount}`
+                  ...phone,
+                  phoneTag: `DS${owner2DsCount}`,
                 });
               }
             }
@@ -192,9 +189,11 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
           // Process phones sequentially with delay to avoid rate limiting
           for (let index = 0; index < phonesToValidate.length; index++) {
             const phone = phonesToValidate[index];
-            
-            console.log(`[SkipTraceProcessing] Validating phone ${index + 1}/${phonesToValidate.length}: ${phone.phoneNumber}`);
-            
+
+            console.log(
+              `[SkipTraceProcessing] Validating phone ${index + 1}/${phonesToValidate.length}: ${phone.phoneNumber} (tag: ${phone.phoneTag}, contactId: ${phone.contactId})`,
+            );
+
             const result = await validateAndStorePhone({
               contactId: phone.contactId,
               phoneNumber: phone.phoneNumber,
@@ -216,7 +215,7 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
             if (index < phonesToValidate.length - 1) {
               const delay = 200; // 200ms delay between requests
               console.log(`[SkipTraceProcessing] Waiting ${delay}ms before next validation...`);
-              await new Promise(resolve => setTimeout(resolve, delay));
+              await new Promise((resolve) => setTimeout(resolve, delay));
             }
           }
 
@@ -396,7 +395,8 @@ const saveDirectSkipContacts = async (
           processedContactIds.add(contact!.id);
 
           // Save main contact's phones (without validation) so they exist in the database
-          const contactPhones = contactData.phones || [];
+          // Limit to first 3 phones
+          const contactPhones = (contactData.phones || []).slice(0, 3);
           if (contactPhones.length > 0) {
             const contactId = contact!.id;
             await prisma.$transaction(async (tx) => {
@@ -455,7 +455,8 @@ const saveDirectSkipContacts = async (
               const relName = relative.name?.split(" ") || [];
               const relFirstName = (relName[0] || "").toLowerCase();
               const relLastName = (relName.slice(1).join(" ") || "").toLowerCase();
-              const relPhoneNumbers = relative.phones || [];
+              // Limit to first 3 phones
+              const relPhoneNumbers = (relative.phones || []).slice(0, 3);
 
               if (!relFirstName && !relLastName) continue;
 
@@ -814,64 +815,6 @@ const savePropertyDetails = async (
 
 const normalize = (v?: string) => v?.toLowerCase().trim() || "";
 
-// type ResolvedIdentity = {
-//   contact: DirectSkipContact;
-//   name: DirectSkipNameRecord;
-//   score: number;
-// };
-
-// export function resolveMainContactOptimized(
-//   contacts: DirectSkipContact[],
-//   input: { firstname?: string; lastname?: string }
-// ): ResolvedIdentity | null {
-//   if (!contacts || contacts.length === 0) return null;
-
-//   const inputFirst = normalize(input.firstname);
-//   const inputLast = normalize(input.lastname);
-
-//   let bestMatch: ResolvedIdentity | null = null;
-
-//   for (const contact of contacts) {
-//     for (const name of contact.names || []) {
-//       const first = normalize(name.firstname);
-//       const last = normalize(name.lastname);
-
-//       let score = 0;
-//       let resolvedName: DirectSkipNameRecord = { ...name };
-
-//       // 1️⃣ Full name match → keep API name
-//       if (first === inputFirst && last === inputLast) {
-//         score = 100;
-//       }
-
-//       // 2️⃣ First name match only → override last name with input
-//       else if (first === inputFirst) {
-//         score = 70;
-//         resolvedName.lastname = input.lastname;
-//       }
-
-//       // 3️⃣ Non-deceased fallback
-//       else if (name.deceased === "N") {
-//         score = 40;
-//       }
-
-//       // 4️⃣ Weak fallback
-//       else {
-//         score = 10;
-//       }
-
-//       if (!bestMatch || score > bestMatch.score) {
-//         bestMatch = {
-//           contact,
-//           name: resolvedName,
-//           score,
-//         };
-//       }
-//     }
-//   }
-
-//   return bestMatch;
-// }
 export function resolveMainContactOptimized(
   contacts: DirectSkipContact[],
   input: { firstname?: string; lastname?: string },
@@ -1038,32 +981,97 @@ export const resolveOwnershipContacts = async (
   });
 
   // Check if owner2 has phones in DirectSkip response
-  // Look for owner2 in the contacts array
+  // Look for owner2 in BOTH the contacts array AND in relatives, and collect ALL phones
   let owner2Phones: { phonenumber?: string; phonetype?: string }[] = [];
 
+  console.log(`[Ownership] Searching for owner2 in DirectSkip response: "${owner2First}" "${owner2Last}"`);
+
   if (response.contacts) {
-    for (const contact of response.contacts) {
+    console.log(`[Ownership] Checking ${response.contacts.length} contacts from DirectSkip...`);
+
+    // First, check top-level contacts array
+    for (let i = 0; i < response.contacts.length; i++) {
+      const contact = response.contacts[i];
+
       for (const name of contact.names || []) {
         const first = normalize(name.firstname);
         const last = normalize(name.lastname);
 
+        console.log(
+          `[Ownership] Contact ${i + 1}: Checking "${first}" "${last}" (original: "${name.firstname}" "${name.lastname}")`,
+        );
+
         if (first === owner2First && last === owner2Last) {
-          // Found owner2 in DirectSkip response, get all phones
+          console.log(`[Ownership] ✓ MATCH FOUND in contacts! Owner2 found in DirectSkip response`);
+
           if (contact.phones && contact.phones.length > 0) {
-            owner2Phones = contact.phones;
+            // Add phones from contacts array
+            owner2Phones.push(...contact.phones);
+            console.log(
+              `[Ownership] Added ${contact.phones.length} phones from contacts array (total: ${owner2Phones.length})`,
+            );
+          } else {
+            console.log(`[Ownership] Owner2 match found in contacts but no phones available`);
           }
-          break;
+          break; // Found in this contact's names, move to next contact
         }
       }
-      if (owner2Phones.length > 0) break;
+    }
+
+    // Also check relatives array (don't stop even if found in contacts)
+    console.log(`[Ownership] Checking relatives arrays for additional Owner2 phones...`);
+
+    for (let i = 0; i < response.contacts.length; i++) {
+      const contact = response.contacts[i];
+
+      if (contact.relatives && contact.relatives.length > 0) {
+        console.log(`[Ownership] Contact ${i + 1} has ${contact.relatives.length} relatives`);
+
+        for (let j = 0; j < contact.relatives.length; j++) {
+          const relative = contact.relatives[j];
+          const relativeName = normalize(relative.name);
+
+          // Parse the relative name (format: "FIRSTNAME LASTNAME")
+          const nameParts = relativeName.split(" ").filter(Boolean);
+          const relativeFirst = nameParts[0] || "";
+          const relativeLast = nameParts.slice(1).join(" ") || "";
+
+          console.log(
+            `[Ownership]   Relative ${j + 1}: Checking "${relativeFirst}" "${relativeLast}" (original: "${relative.name}")`,
+          );
+
+          if (relativeFirst === owner2First && relativeLast === owner2Last) {
+            console.log(`[Ownership] ✓ MATCH FOUND in relatives! Owner2 found as relative`);
+
+            if (relative.phones && relative.phones.length > 0) {
+              // Add phones from relatives array
+              owner2Phones.push(...relative.phones);
+              console.log(
+                `[Ownership] Added ${relative.phones.length} phones from relatives array (total: ${owner2Phones.length})`,
+              );
+            } else {
+              console.log(`[Ownership] Owner2 match found in relatives but no phones available`);
+            }
+            break; // Found in this contact's relatives, move to next contact
+          }
+        }
+      }
+    }
+
+    if (owner2Phones.length === 0) {
+      console.log(`[Ownership] ✗ Owner2 NOT found in DirectSkip response (checked both contacts and relatives)`);
+      console.log(`[Ownership] Expected: "${owner2First}" "${owner2Last}"`);
+    } else {
+      console.log(`[Ownership] Total phones collected for Owner2: ${owner2Phones.length}`);
     }
   }
 
-  // Save ALL owner2 phones to database (regardless of validation)
-  if (owner2Phones.length > 0) {
+  // Save first 3 owner2 phones to database (regardless of validation)
+  const owner2PhonesToSave = owner2Phones.slice(0, 3);
+  if (owner2PhonesToSave.length > 0) {
     result.owner2HasPhones = true;
     await prisma.$transaction(async (tx) => {
-      for (const phone of owner2Phones) {
+      for (const phone of owner2PhonesToSave) {
         if (!phone.phonenumber) continue;
         const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
         const last10 = formattedNumber.slice(-10);
@@ -1094,7 +1102,7 @@ export const resolveOwnershipContacts = async (
         }
       }
     });
-    console.log(`[Ownership] Saved ${owner2Phones.length} phones for owner2 ${owner2Contact.id}`);
+    console.log(`[Ownership] Saved ${owner2PhonesToSave.length} phones for owner2 ${owner2Contact.id}`);
 
     // Add first 2 phones for validation
     const phonesToValidate = owner2Phones.slice(0, 2);
@@ -1117,10 +1125,7 @@ export const resolveOwnershipContacts = async (
 /**
  * Creates PropertyOwnership records linking a property to its owners
  */
-export const createPropertyOwnerships = async (
-  propertyId: string,
-  owners: OwnershipContact[],
-): Promise<void> => {
+export const createPropertyOwnerships = async (propertyId: string, owners: OwnershipContact[]): Promise<void> => {
   for (const owner of owners) {
     try {
       await prisma.propertyOwnership.upsert({
