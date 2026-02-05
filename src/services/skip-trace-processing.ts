@@ -21,7 +21,7 @@ interface PhoneToValidate {
   contactId: string;
   phoneNumber: string;
   phoneType: string;
-  isMainContact: boolean;
+  phoneTag: string;
 }
 
 export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
@@ -61,10 +61,6 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
           },
           { strict: false },
         );
-        // if (!response.contacts.length) {
-        //   console.log(`[SkipTraceProcessing] Processing for ${result} failed.`);
-        //   return;
-        // }
 
         // 2. Save DirectSkip contacts (NO phone validation yet)
         const contactMap = await saveDirectSkipContacts(response, ownerId, poBoxAddress);
@@ -94,41 +90,43 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
         }
 
         // 3. Determine which phones to lookup based on deceased status
-        // Validation rules:
-        // - Owner alive: validate first 3 owner phones + first 2 owner2 phones (if present)
-        // - Owner deceased + owner2 has phones: validate first 2 owner2 phones
-        // - Owner deceased + no owner2 phones: validate first relative's 1st phone
         const phonesToValidate: PhoneToValidate[] = [];
 
         if (response.contacts && response.contacts.length > 0) {
-          // Use the resolved main contact, not just contacts[0]
           const resolved = resolveMainContactOptimized(response.contacts, response.input);
           const mainContact = resolved?.contact;
           const isMainContactDeceased = mainContact?.names?.some((name) => name.deceased === "Y") ?? false;
 
+          let dsCount = 0; // Counter for DS tags
+
           if (isMainContactDeceased) {
-            // Main contact is deceased
             console.log(`[SkipTraceProcessing] Main contact is deceased`);
 
             if (ownershipResult.owner2HasPhones) {
-              // Owner2 has phones: validate first 2 owner2 phones
-              console.log(`[SkipTraceProcessing] Using owner2 phones for validation (owner deceased)`);
-              phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
-            } else {
-              // No owner2 phones: validate first relative's 1st phone
-              console.log(`[SkipTraceProcessing] No owner2 phones, using first relative's phone`);
-              const firstRelative = mainContact?.relatives?.[0];
+              console.log(`[SkipTraceProcessing] Adding owner2 phones for validation (owner deceased)`);
+              // phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
+              // Re-map owner2 phones to assign DS tags starting from 1
+              for (const phone of ownershipResult.owner2PhonesToValidate) {
+                dsCount++;
+                phonesToValidate.push({
+                    ...phone,
+                    phoneTag: `DS${dsCount}`
+                });
+              }
+            }
 
-              if (firstRelative && firstRelative.phones && firstRelative.phones.length > 0) {
-                const relativeId = contactMap.relatives.get(firstRelative.name || "");
-                if (relativeId && firstRelative.phones[0].phonenumber) {
-                  phonesToValidate.push({
-                    contactId: relativeId,
-                    phoneNumber: firstRelative.phones[0].phonenumber,
-                    phoneType: firstRelative.phones[0].phonetype || "Unknown",
-                    isMainContact: false,
-                  });
-                }
+            console.log(`[SkipTraceProcessing] Checking first relative's phone (owner deceased)`);
+            const firstRelative = mainContact?.relatives?.[0];
+
+            if (firstRelative && firstRelative.phones && firstRelative.phones.length > 0) {
+              const relativeId = contactMap.relatives.get(firstRelative.name || "");
+              if (relativeId && firstRelative.phones[0].phonenumber) {
+                phonesToValidate.push({
+                  contactId: relativeId,
+                  phoneNumber: firstRelative.phones[0].phonenumber,
+                  phoneType: firstRelative.phones[0].phonetype || "Unknown",
+                  phoneTag: "R1",
+                });
               }
             }
           } else {
@@ -139,11 +137,12 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
               const phonesToAdd = mainContact.phones.slice(0, 3);
               for (const phone of phonesToAdd) {
                 if (phone.phonenumber) {
+                  dsCount++;
                   phonesToValidate.push({
                     contactId: mainContactId,
                     phoneNumber: phone.phonenumber,
                     phoneType: phone.phonetype || "Unknown",
-                    isMainContact: true,
+                    phoneTag: `DS${dsCount}`,
                   });
                 }
               }
@@ -152,7 +151,14 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
             // Also add owner2's first 2 phones for validation (if present)
             if (ownershipResult.owner2PhonesToValidate.length > 0) {
               console.log(`[SkipTraceProcessing] Adding owner2 phones to validation queue (owner alive)`);
-              phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
+              // phonesToValidate.push(...ownershipResult.owner2PhonesToValidate);
+               for (const phone of ownershipResult.owner2PhonesToValidate) {
+                dsCount++;
+                phonesToValidate.push({
+                    ...phone,
+                    phoneTag: `DS${dsCount}`
+                });
+              }
             }
           }
         }
@@ -183,27 +189,36 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
 
           console.log(`[SkipTraceProcessing] Validating ${phonesToValidate.length} selected phones...`);
 
-          await Promise.all(
-            phonesToValidate.map(async (phone, index) => {
-              const result = await validateAndStorePhone({
-                contactId: phone.contactId,
-                phoneNumber: phone.phoneNumber,
-                phoneType: phone.phoneType,
-                isMainContact: phone.isMainContact,
-                count: index + 1,
-              });
+          // Process phones sequentially with delay to avoid rate limiting
+          for (let index = 0; index < phonesToValidate.length; index++) {
+            const phone = phonesToValidate[index];
+            
+            console.log(`[SkipTraceProcessing] Validating phone ${index + 1}/${phonesToValidate.length}: ${phone.phoneNumber}`);
+            
+            const result = await validateAndStorePhone({
+              contactId: phone.contactId,
+              phoneNumber: phone.phoneNumber,
+              phoneType: phone.phoneType,
+              phoneTag: phone.phoneTag,
+            });
 
-              if (result.success) {
-                console.log(
-                  `[SkipTraceProcessing] ✓ Validated and stored phone ${phone.phoneNumber} (index: ${index})`,
-                );
-              } else {
-                console.log(
-                  `[SkipTraceProcessing] ✗ Skipped phone ${phone.phoneNumber} (index: ${index}): ${result.reason}`,
-                );
-              }
-            }),
-          );
+            if (result.success) {
+              console.log(
+                `[SkipTraceProcessing] ✓ Validated and stored phone ${phone.phoneNumber} (tag: ${phone.phoneTag})`,
+              );
+            } else {
+              console.log(
+                `[SkipTraceProcessing] ✗ Skipped phone ${phone.phoneNumber} (tag: ${phone.phoneTag}): ${result.reason}`,
+              );
+            }
+
+            // Add delay between requests to avoid rate limiting (except after the last one)
+            if (index < phonesToValidate.length - 1) {
+              const delay = 200; // 200ms delay between requests
+              console.log(`[SkipTraceProcessing] Waiting ${delay}ms before next validation...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
 
           await prisma.pipeline.update({
             where: {
@@ -1089,7 +1104,7 @@ export const resolveOwnershipContacts = async (
           contactId: owner2Contact.id,
           phoneNumber: phone.phonenumber,
           phoneType: phone.phonetype || "Unknown",
-          isMainContact: false,
+          phoneTag: "", // Will be assigned in main loop
         });
       }
     }

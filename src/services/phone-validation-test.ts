@@ -1,5 +1,5 @@
 import prisma from "../db";
-import { lookupSingleNumber } from "./number-lookup-test";
+import { lookupSingleNumber, TelnyxLookupResult } from "./number-lookup-test";
 import { normalizePhone, toE164 } from "../utils/phone";
 import { us_state } from "../utils/constants";
 import crypto from "crypto";
@@ -8,8 +8,7 @@ export interface PhoneValidationParams {
   contactId: string;
   phoneNumber: string;
   phoneType: string;
-  isMainContact: boolean;
-  count: number;
+  phoneTag: string;
 }
 
 export interface PhoneValidationResult {
@@ -41,7 +40,7 @@ function classifyCallerId(callerName: string | null | undefined, firstName: stri
 }
 
 export async function validateAndStorePhone(params: PhoneValidationParams): Promise<PhoneValidationResult> {
-  const { contactId, phoneNumber, phoneType, isMainContact, count } = params;
+  const { contactId, phoneNumber, phoneType, phoneTag } = params;
 
   try {
     const normalized = normalizePhone(phoneNumber);
@@ -57,12 +56,36 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
 
     console.log(`[PhoneValidation] Running Telnyx lookup for ${e164}`);
 
-    const telnyxResult = await lookupSingleNumber(e164);
+    // Retry logic for rate limiting
+    let telnyxResult: TelnyxLookupResult;
+    let retryCount = 0;
+    const maxRetries = 3;
+    const baseDelay = 2000; // 2 seconds
+
+    // Use do-while to ensure telnyxResult is always assigned
+    do {
+      telnyxResult = await lookupSingleNumber(e164);
+
+      // Check if it's a rate limit error
+      const isRateLimitError = telnyxResult.error?.includes("Too many requests") || 
+                               telnyxResult.error?.includes("exceeded the maximum");
+
+      if (telnyxResult.success || !isRateLimitError) {
+        break; // Success or non-rate-limit error, exit retry loop
+      }
+
+      retryCount++;
+      if (retryCount <= maxRetries) {
+        const delay = baseDelay * Math.pow(2, retryCount - 1); // Exponential backoff: 2s, 4s, 8s
+        console.log(`[PhoneValidation] Rate limit hit for ${e164}, retrying in ${delay}ms (attempt ${retryCount}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    } while (retryCount <= maxRetries);
 
     console.log(`[PhoneValidation] Telnyx lookup raw response:`, JSON.stringify(telnyxResult, null, 2));
 
     if (!telnyxResult.success || !telnyxResult.data) {
-      console.log(`[PhoneValidation] Telnyx lookup failed for ${e164}: ${telnyxResult.error}`);
+      console.log(`[PhoneValidation] Telnyx lookup failed for ${e164} after ${retryCount} retries: ${telnyxResult.error}`);
       return {
         success: false,
         reason: "lookup_failed",
@@ -101,7 +124,8 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
 
       phoneId = existingForContact?.id ?? candidatePhoneId;
 
-      const lookupRecord = await tx.telynxLookup.upsert({
+      // Upsert the Telnyx lookup record
+      await tx.telynxLookup.upsert({
         where: { phone_number: e164 },
         update: {
           updatedAt: new Date(),
@@ -176,30 +200,43 @@ export async function validateAndStorePhone(params: PhoneValidationParams): Prom
         },
       });
 
-      // console.log(`[PhoneValidation] Upserted TelynxLookup record ID: ${lookupRecord.id}`);
+      // Explicitly fetch the record to get the ID (needed because upsert doesn't always return ID reliably on update)
+      const lookupRecord = await tx.telynxLookup.findUnique({
+        where: { phone_number: e164 },
+        select: { id: true },
+      });
+
+      if (!lookupRecord) {
+        throw new Error(`Failed to find TelynxLookup record for ${e164} after upsert`);
+      }
+
+      console.log(`[PhoneValidation] TelynxLookup record ID: ${lookupRecord.id} for phone ${e164}`);
+      console.log(`[PhoneValidation] About to ${existingForContact ? 'UPDATE' : 'CREATE'} contact_phones with telynxLookupId: ${lookupRecord.id}`);
 
       if (existingForContact) {
-        await tx.contact_phones.update({
+        const updated = await tx.contact_phones.update({
           where: { id: existingForContact.id },
           data: {
             phone_number: e164,
             phone_status: "active",
-            phone_tags: isMainContact ? `DS${count}` : "",
+            phone_tags: phoneTag,
             telynxLookupId: lookupRecord.id,
           },
         });
+        console.log(`[PhoneValidation] Updated contact_phones ID: ${updated.id}, telynxLookupId set to: ${updated.telynxLookupId}`);
       } else {
-        await tx.contact_phones.create({
+        const created = await tx.contact_phones.create({
           data: {
             id: phoneId,
             contact_id: contactId,
             phone_number: e164,
             phone_type: phoneType,
             phone_status: "active",
-            phone_tags: isMainContact ? `DS${count}` : "",
+            phone_tags: phoneTag,
             telynxLookupId: lookupRecord.id,
           },
         });
+        console.log(`[PhoneValidation] Created contact_phones ID: ${created.id}, telynxLookupId set to: ${created.telynxLookupId}`);
       }
     });
 

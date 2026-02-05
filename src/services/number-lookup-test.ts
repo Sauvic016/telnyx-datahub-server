@@ -70,6 +70,20 @@ export async function lookupSingleNumber(
       },
     });
 
+    // Log rate limit headers for monitoring
+    const rateLimitLimit = response.headers['x-ratelimit-limit'];
+    const rateLimitRemaining = response.headers['x-ratelimit-remaining'];
+    const rateLimitReset = response.headers['x-ratelimit-reset'];
+    
+    if (rateLimitRemaining !== undefined) {
+      console.log(`[TelnyxLookup] Rate limit: ${rateLimitRemaining}/${rateLimitLimit} remaining (resets at ${rateLimitReset})`);
+      
+      // Warn if we're getting close to the limit
+      if (parseInt(rateLimitRemaining) < 10) {
+        console.warn(`[TelnyxLookup] WARNING: Only ${rateLimitRemaining} requests remaining before rate limit!`);
+      }
+    }
+
     console.log(`[TelnyxLookup] Success for ${e164Phone}`);
     console.log(response.data);
 

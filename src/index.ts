@@ -22,8 +22,6 @@ import completedDataRouter from "./routes/completed-data";
 import recordsRouter from "./routes/records";
 import newDataRouter from "./routes/new-data";
 
-import { getCompletedDataForContactId } from "./services/completed-data";
-
 import { BOTMAP } from "./utils/constants";
 import { Owner } from "./models/Owner";
 import { syncScrappedDataOptimized } from "./services/mongo-sync-optimized";
@@ -37,7 +35,7 @@ const app = express();
 const PORT = 5000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "100mb" }));
 
 const uploadDir = path.join(process.cwd(), "job_result");
 console.log("Upload directory:", uploadDir);
@@ -230,39 +228,6 @@ app.get("/directskip-batch/:batchId", async (req, res) => {
 });
 
 // Manual trigger for MongoDB sync (useful for retries or scheduled jobs)
-
-app.get("/record-detail/:id", async (req, res) => {
-  const contactId = req.params.id;
-
-  try {
-    const contact = await getCompletedDataForContactId(contactId);
-
-    // const contact = await prisma.contacts.findUnique({
-    //   where: { id: contactId },
-    //   include: {
-    //     contact_phones: true,
-    //     property_details: {
-    //       include: {
-    //         lists: {
-    //           include: {
-    //             list: true,
-    //           },
-    //         },
-    //       },
-    //     },
-    //   },
-    // });
-
-    if (!contact) {
-      return res.status(404).json({ error: "Contact not found" });
-    }
-
-    res.json(contact);
-  } catch (error) {
-    console.error("Error fetching contact details:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
 
 app.get("/mongodbsave", async (req, res) => {
   try {

@@ -5,101 +5,6 @@ import { PropertyData } from "../models/PropertyData";
 import { formatRowData } from "../utils/completed-formatter";
 import { makeIdentityKey, resolveDateRange } from "../utils/helper";
 
-const formatContactData = (contact: any, matchedProperty?: any) => {
-  const relatives = [
-    ...contact.relationsFrom.map((rel: any) => ({
-      first_name: rel.toContact.first_name,
-      last_name: rel.toContact.last_name,
-      contact_phones: rel.toContact.contact_phones.map((p: any) => ({
-        ...p,
-        callerId: p.telynxLookup?.caller_id,
-        islookedup: !!p.telynxLookup,
-      })),
-    })),
-    ...contact.relationsTo.map((rel: any) => ({
-      first_name: rel.fromContact.first_name,
-      last_name: rel.fromContact.last_name,
-      contact_phones: rel.fromContact.contact_phones.map((p: any) => ({
-        ...p,
-        callerId: p.telynxLookup?.caller_id,
-        islookedup: !!p.telynxLookup,
-      })),
-    })),
-  ];
-
-  // const filteredPropertyDetails = matchedProperty
-  //   ? contact.property_details.filter((pd: any) => isSameProperty(matchedProperty, pd))
-  //   : contact.property_details;
-
-  return {
-    id: contact.id,
-    first_name: contact.first_name,
-    last_name: contact.last_name,
-    mailing_address: contact.mailing_address,
-    mailing_city: contact.mailing_city,
-    mailing_state: contact.mailing_state,
-    mailing_zip: contact.mailing_zip,
-    deceased: contact.deceased,
-    age: contact.age,
-
-    confirmedAddress: contact.directskips?.confirmedAddress,
-
-    contact_phones:
-      contact.contact_phones?.map((phone: any) => ({
-        ...phone,
-        callerId: phone.telynxLookup?.caller_id,
-        islookedup: !!phone.telynxLookup,
-      })) || [],
-
-    // ✅ ONLY the matched property
-    property_details: contact.property_details,
-
-    relatives,
-  };
-};
-
-export const getCompletedDataForContactId = async (contactId: string) => {
-  const contact = await prisma.contacts.findUnique({
-    where: { id: contactId },
-    include: {
-      directskips: true,
-      contact_phones: {
-        include: { telynxLookup: true },
-      },
-      property_details: { include: { lists: { include: { list: true } } } },
-      relationsFrom: {
-        include: {
-          toContact: {
-            select: {
-              first_name: true,
-              last_name: true,
-              contact_phones: {
-                include: { telynxLookup: true },
-              },
-            },
-          },
-        },
-      },
-      relationsTo: {
-        include: {
-          fromContact: {
-            select: {
-              first_name: true,
-              last_name: true,
-              contact_phones: {
-                include: { telynxLookup: true },
-              },
-            },
-          },
-        },
-      },
-    },
-  });
-
-  // need to fix this one aswell
-  return formatContactData(contact);
-};
-
 function matchesActivityFilter(activity: Activity, filter: { smsSent?: boolean; smsDelivered?: boolean }): boolean {
   // Case 1: user filters by smsDelivered
   if (filter.smsDelivered === true) {
@@ -424,18 +329,16 @@ function getPropIdPhoneNumbers(data: any): Record<string, any> {
   const phoneSet = new Set<string>();
 
   // Add main contact's phone numbers
-  for (const phone of data.contacts.contact_phones) {
-    if (phone.phone_number) {
+  for (const phone of data.contacts?.contact_phones ?? []) {
+    if (phone?.phone_number) {
       phoneSet.add(phone.phone_number);
     }
   }
 
   // Add relatives' phone numbers from relationsFrom
-  for (const relation of data.contacts.relationsFrom) {
-    // Skip self-referential relations
-
-    for (const phone of relation.toContact.contact_phones) {
-      if (phone.phone_number) {
+  for (const relation of data.contacts?.relationsFrom ?? []) {
+    for (const phone of relation?.toContact?.contact_phones ?? []) {
+      if (phone?.phone_number) {
         phoneSet.add(phone.phone_number);
       }
     }
