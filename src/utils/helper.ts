@@ -47,8 +47,26 @@ export const getAllJobs = async (): Promise<BotJobs[]> => {
     orderBy: { updatedAt: "asc" },
   });
 };
+export const getJobsForBackfill = async (): Promise<BotJobs[]> => {
+  const start = new Date("2026-02-01T21:00:00Z"); // 2nd Feb 2:30 AM IST
+  const end = new Date("2026-02-02T18:16:33Z");
+
+  return prisma.botJobs.findMany({
+    where: {
+      updatedAt: {
+        gte: start,
+        lt: end,
+      },
+      startedByBotId: { in: [2, 3] },
+    },
+    orderBy: {
+      updatedAt: "asc",
+    },
+  });
+};
+
 export const getAllJobsAfterLastSync = async (): Promise<BotJobs[]> => {
-  const lastSyncedAt = new Date("2026-02-01T18:16:33Z");
+  const lastSyncedAt = new Date("2026-02-02T18:16:33Z");
 
   return prisma.botJobs.findMany({
     where: {

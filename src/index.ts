@@ -29,6 +29,7 @@ import editDetails from "./services/edit-details";
 import { backfillPipelineLinks } from "./services/backfill-pipeline";
 
 import { migrateLastSaleDateStrings } from "./utils/mongo-last-sale-date-migration";
+import { backfillSaleAndCaseDates } from "./utils/completed-page-backfill";
 // import { cleanUpNewData } from "./utils/new-data-page-cleanup";
 
 const app = express();
@@ -252,6 +253,8 @@ app.get("/mongodbsave", async (req, res) => {
 app.listen(PORT, async () => {
   console.log(`Receiver running on port ${PORT}`);
   connectToMongo();
+  // await syncScrappedDataOptimized(true);
+  // backfillSaleAndCaseDates();
   // backfillPipelineLinks();
   // cleanUpNewData();
   // migrateLastSaleDateStrings();

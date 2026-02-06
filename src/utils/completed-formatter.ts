@@ -140,6 +140,8 @@ interface FormattedPropertyDetails {
   primaryPropertyStatus: FormattedPropertyStatus | null;
   secondaryPropertyStatus: FormattedPropertyStatus | null;
   propertyOwners: any;
+  sale_date: string | null;
+  case_date: string | null;
 }
 
 interface FormattedRow {
@@ -278,6 +280,8 @@ const formatPrismaPropertyDetails = (propertyDetails: any): FormattedPropertyDet
       primaryPropertyStatus: null,
       secondaryPropertyStatus: null,
       propertyOwners: null,
+      sale_date: null,
+      case_date: null,
     };
   }
 
@@ -303,6 +307,8 @@ const formatPrismaPropertyDetails = (propertyDetails: any): FormattedPropertyDet
     primaryPropertyStatus,
     secondaryPropertyStatus,
     propertyOwners: propertyDetails.owners ?? null,
+    sale_date: propertyDetails.sale_date ?? null,
+    case_date: propertyDetails.case_date ?? null,
   };
 };
 

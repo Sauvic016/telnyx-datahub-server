@@ -42,6 +42,24 @@ function buildOrderBy(
           },
         },
       };
+    case "case_date":
+      return {
+        propertyDetails: {
+          case_date: {
+            sort: sortOrder === "asc" ? Prisma.SortOrder.asc : Prisma.SortOrder.desc,
+            nulls: Prisma.NullsOrder.last,
+          },
+        },
+      };
+    case "sale_date":
+      return {
+        propertyDetails: {
+          sale_date: {
+            sort: sortOrder === "asc" ? Prisma.SortOrder.asc : Prisma.SortOrder.desc,
+            nulls: Prisma.NullsOrder.last,
+          },
+        },
+      };
     case "updatedAt":
     default:
       return { updatedAt: sortOrder };
