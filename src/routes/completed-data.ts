@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { CompletedRecordsFilters, fetchCompletedRecords } from "../services/completed-data";
+import { CompletedRecordsFilters, fetchCompletedRecords } from "../services/completed-data-fast";
 import { getValidParam } from "../utils/query-params";
 import { parseAmPmTime, isInTimeSlot } from "../utils/helper";
 import { sortContactPhonesByTag } from "../utils/completed-formatter";
@@ -582,9 +582,23 @@ async function createJobTargets(
   }
 
   const contactIds = targets.map((t) => t.contactId);
+  const validPropertyIds = targets.map((t) => t.propertyId).filter((id): id is string => !!id);
+
+  // Get owner contacts for these properties
+  const owners =
+    validPropertyIds.length > 0
+      ? await prisma.propertyOwnership.findMany({
+          where: { propertyId: { in: validPropertyIds } },
+          select: { contactId: true, propertyId: true },
+        })
+      : [];
+
+  // Merge owner contactIds with target contactIds
+  const ownerContactIds = owners.map((o) => o.contactId);
+  const allContactIds = [...new Set([...contactIds, ...ownerContactIds])];
 
   // Build phone query with filters
-  const phoneWhereClause: any = { contact_id: { in: contactIds } };
+  const phoneWhereClause: any = { contact_id: { in: allContactIds } };
 
   // Build inclusion conditions
   const inclusionConditions: any[] = [];
@@ -668,6 +682,11 @@ async function createJobTargets(
 
   // Map contactId -> propertyId
   const propertyByContact = new Map(targets.map((t) => [t.contactId, t.propertyId]));
+  for (const owner of owners) {
+    if (!propertyByContact.has(owner.contactId)) {
+      propertyByContact.set(owner.contactId, owner.propertyId);
+    }
+  }
 
   // Create targets - one per matching phone
   const jobTargetsData = filteredPhones.map((phone) => ({
