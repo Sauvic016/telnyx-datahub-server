@@ -688,9 +688,16 @@ const savePropertyDetails = async (
     const buildingUseCode = propData.land_use_code || "";
     const parcelId = propData.parcel || propData.apn || "";
     const lastSalePrice = propData.last_sale_price ? String(propData.last_sale_price) : "";
-    const rawDate = propData.last_sale_date;
 
+    const rawDate = propData.last_sale_date;
     const lastSold: Date | null = rawDate ? new Date(rawDate) : null;
+
+    const rawSaleDate = propData.sale_date;
+    const sale_date: Date | null = rawSaleDate ? new Date(rawSaleDate) : null;
+
+    const rawCaseDate = propData.case_date;
+    const case_date: Date | null = rawCaseDate ? new Date(rawCaseDate) : null;
+
     const taxDelinquentValue = propData.tax_delinquent_amount ? String(propData.tax_delinquent_amount) : "";
     const yearBehindOnTaxes = propData.years_delinquent ? String(propData.years_delinquent) : "";
     const foreclosureDate = propData.foreclosure || propData.foreclosure_date || "";
@@ -732,6 +739,8 @@ const savePropertyDetails = async (
           apn: String(parcelId),
           last_sale_price: lastSalePrice,
           last_sold: lastSold,
+          sale_date,
+          case_date,
           tax_delinquent_value: taxDelinquentValue,
           year_behind_on_taxes: yearBehindOnTaxes,
           foreclosure_date: foreclosureDate,
@@ -758,6 +767,8 @@ const savePropertyDetails = async (
       if (parcelId) updateData.apn = String(parcelId);
       if (lastSalePrice) updateData.last_sale_price = lastSalePrice;
       if (lastSold) updateData.last_sold = lastSold;
+      if (sale_date) updateData.sale_date = sale_date;
+      if (case_date) updateData.case_date = case_date;
       if (taxDelinquentValue) updateData.tax_delinquent_value = taxDelinquentValue;
       if (yearBehindOnTaxes) updateData.year_behind_on_taxes = yearBehindOnTaxes;
       if (foreclosureDate) updateData.foreclosure_date = foreclosureDate;

@@ -9,29 +9,41 @@ import { Activity } from "../services/completed-data";
 export const sortContactPhonesByTag = (phones: any[]): any[] => {
   if (!phones || phones.length === 0) return phones;
 
-  // Check if any phone has phone_tags with DS pattern
+  // Check if any phone has phone_tags with DS or R pattern
   const hasAnyDSTags = phones.some((phone) => phone.phone_tags && /^DS\d+$/i.test(phone.phone_tags));
+  const hasAnyRTags = phones.some((phone) => phone.phone_tags && /^R\d+$/i.test(phone.phone_tags));
 
-  // If no DS tags found, return as-is
-  if (!hasAnyDSTags) return phones;
+  // If no DS or R tags found, return as-is
+  if (!hasAnyDSTags && !hasAnyRTags) return phones;
 
   return [...phones].sort((a, b) => {
     const tagA = a.phone_tags || "";
     const tagB = b.phone_tags || "";
 
-    const matchA = tagA.match(/^DS(\d+)$/i);
-    const matchB = tagB.match(/^DS(\d+)$/i);
+    const dsMatchA = tagA.match(/^DS(\d+)$/i);
+    const dsMatchB = tagB.match(/^DS(\d+)$/i);
+    const rMatchA = tagA.match(/^R(\d+)$/i);
+    const rMatchB = tagB.match(/^R(\d+)$/i);
 
     // If both have DS tags, sort by number
-    if (matchA && matchB) {
-      return parseInt(matchA[1]) - parseInt(matchB[1]);
+    if (dsMatchA && dsMatchB) {
+      return parseInt(dsMatchA[1]) - parseInt(dsMatchB[1]);
     }
 
-    // DS tags come before non-DS tags
-    if (matchA) return -1;
-    if (matchB) return 1;
+    // DS tags come before everything else
+    if (dsMatchA) return -1;
+    if (dsMatchB) return 1;
 
-    // Both don't have DS tags, keep original order
+    // If both have R tags, sort by number
+    if (rMatchA && rMatchB) {
+      return parseInt(rMatchA[1]) - parseInt(rMatchB[1]);
+    }
+
+    // R tags come before non-DS/non-R tags
+    if (rMatchA) return -1;
+    if (rMatchB) return 1;
+
+    // Both don't have DS or R tags, keep original order
     return 0;
   });
 };
@@ -242,6 +254,7 @@ const formatPhones = (phones: any[] | null | undefined): FormattedContactPhone[]
         phone_status: phone.phone_status ?? null,
         phone_tags: phone.phone_tags ?? null,
         callerId: phone.telynxLookup?.caller_id ?? null,
+        caller_name: phone.telynxLookup?.caller_name_caller_name ?? null,
         isLookedUp: !!phone.telynxLookup,
         telynxLookup: phone.telynxLookup ?? null,
       };

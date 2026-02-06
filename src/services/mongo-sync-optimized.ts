@@ -70,6 +70,7 @@ const mongoToPropertyDetailsMap: Record<string, string> = {
   last_sale_price: "last_sale_price",
   last_sold: "last_sale_date",
   sale_date: "sale_date",
+  case_date: "case_date",
   last_sale_date: "last_sale_date", // CSV variation
   previous_sale_date: "previous_sale_date",
   previous_sale_price: "previous_sale_price",
@@ -207,11 +208,13 @@ function extractPropertyAndOwnerData(
   ownerData: Record<string, any>;
   lastSaleDate: Date | null;
   saleDate: Date | null;
+  caseDate: Date | null;
 } {
   const propertyData: Record<string, any> = {};
   const ownerData: Record<string, any> = {};
   let lastSaleDate: Date | null = null;
   let saleDate: Date | null = null;
+  let caseDate: Date | null = null;
 
   cols.forEach((col, idx) => {
     const value = row[idx];
@@ -235,6 +238,12 @@ function extractPropertyAndOwnerData(
         saleDate = isValid(parsed) ? parsed : null;
       }
     }
+    if (colNameWithoutBotPrefix === "case_date") {
+      if (value) {
+        const parsed = parse(String(value).trim(), "MM/dd/yyyy", new Date());
+        caseDate = isValid(parsed) ? parsed : null;
+      }
+    }
 
     // Distribute data to property or owner
     if (colNameWithoutBotPrefix in mongoToPropertyDetailsMap) {
@@ -244,7 +253,7 @@ function extractPropertyAndOwnerData(
     }
   });
 
-  return { propertyData, ownerData, lastSaleDate, saleDate };
+  return { propertyData, ownerData, lastSaleDate, saleDate, caseDate };
 }
 
 export const syncScrappedDataOptimized = async (manual?: boolean) => {
@@ -416,6 +425,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             ownerData: extractedOwnerData,
             lastSaleDate,
             saleDate,
+            caseDate,
           } = extractPropertyAndOwnerData(cols, row, rowRecord, job.startedByBotId!, mongoToPropertyDetailsMap);
 
           // Build complete property and owner data objects
@@ -427,6 +437,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
             last_sale_date: lastSaleDate,
             isListChanged: false,
             sale_date: saleDate,
+            case_date: caseDate,
           };
 
           const ownerData: Record<string, any> = {

@@ -30,6 +30,9 @@ const PropertyDataSchema = new mongoose.Schema(
     sale_date: {
       type: Date,
     },
+    case_date: {
+      type: Date,
+    },
     previous_sale_date: String,
     last_sale_price: String,
     previous_sale_price: String,

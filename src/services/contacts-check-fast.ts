@@ -38,6 +38,10 @@ const recordGetterFast = async (
     match.clean = { $ne: true };
   }
 
+  if (pageType === "Newdata") {
+    match.decision = { $exists: false };
+  }
+
   // 1c. Exclude specific property IDs (from ownerId_propertyId format)
   if (excludedIds && excludedIds.length > 0) {
     const { ObjectId } = require("mongoose").Types;
