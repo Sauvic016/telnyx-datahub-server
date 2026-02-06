@@ -155,6 +155,8 @@ router.post("/decisions", async (req, res) => {
     }
     let ownerIdSet = new Set(ownerIdList);
     ownerIdList = [...ownerIdSet];
+    let propertyIdSet = new Set(totalKeyList.map((item) => item.propertyId));
+    const propertyIdList = [...propertyIdSet];
 
     await prisma.$transaction(
       totalKeyList
@@ -188,6 +190,15 @@ router.post("/decisions", async (req, res) => {
         $set: {
           decision: ProcessingStage.APPROVED,
           stage: ProcessingStage.APPROVED,
+        },
+      },
+      { strict: false },
+    );
+    await PropertyData.updateMany(
+      { _id: { $in: propertyIdList } },
+      {
+        $set: {
+          decision: ProcessingStage.APPROVED,
         },
       },
       { strict: false },
