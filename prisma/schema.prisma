@@ -338,6 +338,8 @@ model property_details {
   mls                           String?                     @db.VarChar
   last_sale_price               String?                     @db.VarChar
   last_sold                     DateTime?                   @db.Timestamp(6)
+  sale_date                     DateTime?                   @db.Timestamp(6)
+  case_date                     DateTime?                   @db.Timestamp(6)
   lien_type                     String?                     @db.VarChar
   lien_recording_date           String?                     @db.VarChar
   personal_representative       String?                     @db.VarChar

@@ -47,7 +47,7 @@ router.get("/", async (req, res) => {
     }
 
     const sortBy = req.query.sortBy as string | undefined;
-    if (sortBy === "updatedAt" || sortBy === "lastSold") {
+    if (sortBy === "updatedAt" || sortBy === "lastSold" || sortBy === "case_date" || sortBy === "sale_date") {
       filters.sortBy = sortBy;
     }
 

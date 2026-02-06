@@ -254,6 +254,7 @@ const formatPhones = (phones: any[] | null | undefined): FormattedContactPhone[]
         phone_status: phone.phone_status ?? null,
         phone_tags: phone.phone_tags ?? null,
         callerId: phone.telynxLookup?.caller_id ?? null,
+        caller_name: phone.telynxLookup?.caller_name_caller_name ?? null,
         isLookedUp: !!phone.telynxLookup,
         telynxLookup: phone.telynxLookup ?? null,
       };

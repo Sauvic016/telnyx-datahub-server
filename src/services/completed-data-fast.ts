@@ -12,7 +12,7 @@ export interface CompletedRecordsFilters {
   listName?: string;
   propertyStatusId?: string;
   dateRange?: DateRangeFilter;
-  sortBy?: "updatedAt" | "lastSold";
+  sortBy?: "updatedAt" | "lastSold" | "case_date" | "sale_date";
   sortOrder?: "asc" | "desc";
   activity?: Partial<Activity>;
 }
@@ -29,7 +29,7 @@ interface PaginationParams {
 }
 
 function buildOrderBy(
-  sortBy?: "updatedAt" | "lastSold",
+  sortBy?: "updatedAt" | "lastSold" | "case_date" | "sale_date",
   sortOrder: "asc" | "desc" = "desc",
 ): Prisma.PipelineOrderByWithRelationInput {
   switch (sortBy) {
@@ -276,9 +276,7 @@ export const fetchCompletedRecords = async (
 // Get pipeline IDs that have matching outbound messages
 // onlyDelivered = true  → only match messages with status "delivered"
 // onlyDelivered = false → match any outbound message
-async function getFilteredPipelineIds(
-  onlyDelivered: boolean,
-): Promise<Array<{ ownerId: string; propertyId: string }>> {
+async function getFilteredPipelineIds(onlyDelivered: boolean): Promise<Array<{ ownerId: string; propertyId: string }>> {
   // Get all approved pipelines with their phone numbers in a single query
   const pipelines = await prisma.pipeline.findMany({
     where: {
