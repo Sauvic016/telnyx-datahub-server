@@ -301,6 +301,8 @@ model outbound_messages {
   job_targets          job_targets?   @relation(fields: [target_id], references: [id], onUpdate: NoAction)
   templates            templates?     @relation(fields: [template_id], references: [id], onUpdate: NoAction)
   webapp_users         webapp_users   @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([receiver_phone])
 }
 
 model property_details {

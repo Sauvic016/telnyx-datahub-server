@@ -204,15 +204,11 @@ router.post("/decisions", async (req, res) => {
       { strict: false },
     );
 
-    try {
-      await sendApprovedToDirectSkip(totalKeyList);
-    } catch (error) {
-      console.error("[/decisions] ❌ Failed to create DirectSkip batches:", error);
-      return res.status(500).json({
-        error: "Decisions saved but failed to create DirectSkip batches",
-        details: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
+    // Fire-and-forget: approval DB writes are done, DirectSkip processing runs in background
+    sendApprovedToDirectSkip(totalKeyList).catch((error) => {
+      console.error("[/decisions] ❌ DirectSkip background processing failed:", error);
+    });
+
     res.json({
       success: true,
       summary: {

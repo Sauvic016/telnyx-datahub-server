@@ -101,15 +101,17 @@ export async function sendApprovedToDirectSkip(totalKeyList: TotalKeyListType[])
     { strict: false }
   );
 
-  try {
-    await axios.post(`${DIRECTSKIP_SERVER_URL}/run-directskip`, {
+  // Fire-and-forget: don't block the response waiting for DirectSkip server
+  axios
+    .post(`${DIRECTSKIP_SERVER_URL}/run-directskip`, {
       rows: rowsToSend,
+    })
+    .then(() => {
+      console.log("[DirectSkip] Sent to directSkip successfully");
+    })
+    .catch((error) => {
+      console.error(`[DirectSkip] ❌ Error sending to directskip server:`, error);
     });
-    console.log("Sent to directSkip");
-  } catch (error) {
-    console.error(`[DirectSkip] ❌ Error sending to directskip server}:`, error);
-    throw error;
-  }
 
   return rowsToSend.length;
 }

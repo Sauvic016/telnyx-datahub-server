@@ -457,22 +457,56 @@ async function findContactsWithMatchingOutboundMessages(
 ): Promise<Record<string, { status: string }>> {
   const matched: Record<string, { status: string }> = {};
 
+  // Collect all unique phone numbers across all entries
+  const allPhones = new Set<string>();
+  for (const entry of phoneNumbersMap) {
+    const propertyId = Object.keys(entry)[0];
+    const { phones } = entry[propertyId];
+    for (const phone of phones) {
+      allPhones.add(phone);
+    }
+  }
+
+  if (allPhones.size === 0) return matched;
+
+  // Single batched query instead of N sequential queries
+  const allMessages = await prisma.outbound_messages.findMany({
+    where: {
+      receiver_phone: { in: Array.from(allPhones) },
+    },
+    select: { receiver_phone: true, text: true, status: true },
+  });
+
+  // Build a lookup: phone -> messages
+  const messagesByPhone = new Map<string, { text: string | null; status: string | null }[]>();
+  for (const msg of allMessages) {
+    const existing = messagesByPhone.get(msg.receiver_phone) || [];
+    existing.push({ text: msg.text, status: msg.status });
+    messagesByPhone.set(msg.receiver_phone, existing);
+  }
+
+  // Match in-memory by property_address
   for (const entry of phoneNumbersMap) {
     const propertyId = Object.keys(entry)[0];
     const { property_address, phones } = entry[propertyId];
 
     if (!phones.length || !property_address) continue;
 
-    const matchingMessages = await prisma.outbound_messages.findFirst({
-      where: {
-        receiver_phone: { in: phones },
-        text: { contains: property_address, mode: "insensitive" },
-      },
-      select: { id: true, status: true },
-    });
+    const addressLower = property_address.toLowerCase();
+    let found = false;
 
-    if (matchingMessages) {
-      matched[propertyId] = { status: matchingMessages.status! };
+    for (const phone of phones) {
+      if (found) break;
+      const messages = messagesByPhone.get(phone);
+      if (!messages) continue;
+
+      for (const msg of messages) {
+        if (msg.text && msg.text.toLowerCase().includes(addressLower)) {
+          matched[propertyId] = { status: msg.status! };
+          found = true;
+          break;
+        }
+      }
     }
   }
 

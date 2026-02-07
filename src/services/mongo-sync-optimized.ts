@@ -334,8 +334,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const landUseCode = landUseIndex !== -1 ? String(row[landUseIndex] ?? "").trim() : "";
 
           const regex = /\b(510|520|530)\b/;
-          if (regex.test(landUseCode)) continue
-
+          if (regex.test(landUseCode)) continue;
 
           const propertyIdentityKey = makeIdentityKey(propAddr, propertyCity, propertyState, propertyZip);
           propertyIdentityKeys.add(propertyIdentityKey);
@@ -373,7 +372,7 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const landUseCode = landUseIndex !== -1 ? String(row[landUseIndex] ?? "").trim() : "";
 
           const regex = /\b(510|520|530)\b/;
-          if (regex.test(landUseCode)) continue
+          if (regex.test(landUseCode)) continue;
 
           const propertyIdentityKey = makeIdentityKey(propAddr, propertyCity, propertyState, propertyZip);
 
@@ -453,9 +452,9 @@ export const syncScrappedDataOptimized = async (manual?: boolean) => {
           const generatedLists = generateList(job.startedByBotId!, rowRecord);
           const listNames = generatedLists
             ? generatedLists
-              .split(",")
-              .map((s: string) => s.trim())
-              .filter((s: string) => s.length > 0)
+                .split(",")
+                .map((s: string) => s.trim())
+                .filter((s: string) => s.length > 0)
             : [];
 
           propertyData.currList = listNames.map((name: string) => ({
@@ -626,7 +625,7 @@ function filterList(botId: number, record: any): string {
       });
 
     if (hasSpecialAssessment) {
-      lists.push("Special Assessment");
+      lists.push("Special Assessments");
     }
   }
 

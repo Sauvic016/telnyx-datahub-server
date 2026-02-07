@@ -50,17 +50,16 @@ export interface TelnyxLookupResult {
  * @param normalizedPhone - Phone number in normalized format (e.g., "13307605034")
  * @returns TelnyxLookupResult with success status and data
  */
-export async function lookupSingleNumber(
-  normalizedPhone: string
-): Promise<TelnyxLookupResult> {
+export async function lookupSingleNumber(normalizedPhone: string): Promise<TelnyxLookupResult> {
   try {
     const e164Phone = toE164(normalizedPhone);
 
     console.log(`[TelnyxLookup] Looking up ${e164Phone} via Telnyx REST API using axios...`);
 
     const url = `https://api.telnyx.com/v2/number_lookup/${encodeURIComponent(
-      e164Phone
+      e164Phone,
     )}?type=carrier&type=caller-name`;
+    const testurl = `http://localhost:3000/numberLookup`;
 
     const response = await axios.get(url, {
       headers: {
@@ -71,13 +70,15 @@ export async function lookupSingleNumber(
     });
 
     // Log rate limit headers for monitoring
-    const rateLimitLimit = response.headers['x-ratelimit-limit'];
-    const rateLimitRemaining = response.headers['x-ratelimit-remaining'];
-    const rateLimitReset = response.headers['x-ratelimit-reset'];
-    
+    const rateLimitLimit = response.headers["x-ratelimit-limit"];
+    const rateLimitRemaining = response.headers["x-ratelimit-remaining"];
+    const rateLimitReset = response.headers["x-ratelimit-reset"];
+
     if (rateLimitRemaining !== undefined) {
-      console.log(`[TelnyxLookup] Rate limit: ${rateLimitRemaining}/${rateLimitLimit} remaining (resets at ${rateLimitReset})`);
-      
+      console.log(
+        `[TelnyxLookup] Rate limit: ${rateLimitRemaining}/${rateLimitLimit} remaining (resets at ${rateLimitReset})`,
+      );
+
       // Warn if we're getting close to the limit
       if (parseInt(rateLimitRemaining) < 10) {
         console.warn(`[TelnyxLookup] WARNING: Only ${rateLimitRemaining} requests remaining before rate limit!`);
@@ -92,10 +93,7 @@ export async function lookupSingleNumber(
       data: response.data?.data,
     };
   } catch (error: any) {
-    console.error(
-      `[TelnyxLookup] Failed for ${normalizedPhone}:`,
-      error.response?.data || error.message
-    );
+    console.error(`[TelnyxLookup] Failed for ${normalizedPhone}:`, error.response?.data || error.message);
 
     return {
       success: false,
@@ -110,12 +108,10 @@ export async function lookupSingleNumber(
 const numberLookup = async (phones: ILookupNumbers[]) => {
   console.log(
     "[NumberLookup] Batch lookup for:",
-    phones.map((phone) => phone.phone_number)
+    phones.map((phone) => phone.phone_number),
   );
 
-  const results = await Promise.all(
-    phones.map((phone) => lookupSingleNumber(phone.phone_number))
-  );
+  const results = await Promise.all(phones.map((phone) => lookupSingleNumber(phone.phone_number)));
 
   return results;
 };
