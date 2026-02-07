@@ -5,6 +5,7 @@ import { getValidParam } from "../utils/query-params";
 import { parseAmPmTime, isInTimeSlot } from "../utils/helper";
 import { sortContactPhonesByTag } from "../utils/completed-formatter";
 import prisma from "../db";
+import util from "util";
 
 const router = Router();
 
@@ -467,6 +468,7 @@ interface SmsDripRequestBody {
   timeSlots?: SmsDripTimeSlot[];
   targetIds?: string[]; // "contactId_propertyId" format
   filters?: SmsDripFilters;
+  isExpandedSelected: boolean;
 }
 
 interface SmsDripBulkRequestBody {
@@ -576,48 +578,63 @@ async function createJobTargets(
   jobId: string,
   targets: SmsDripTarget[],
   phoneFilters?: PhoneFilter,
+  isExpandedSelected?: boolean,
 ): Promise<{ targetsCreated: number; contactsWithoutMatchingPhones: number }> {
   if (targets.length === 0) {
     return { targetsCreated: 0, contactsWithoutMatchingPhones: 0 };
   }
 
-  const contactIds = targets.map((t) => t.contactId);
-  const validPropertyIds = targets.map((t) => t.propertyId).filter((id): id is string => !!id);
+  let contactIds = targets.map((t) => t.contactId);
+  let owners;
+  if (!isExpandedSelected) {
+    const validPropertyIds = targets.map((t) => t.propertyId).filter((id): id is string => !!id);
 
-  // Get owner contacts for these properties
-  const owners =
-    validPropertyIds.length > 0
-      ? await prisma.propertyOwnership.findMany({
-          where: { propertyId: { in: validPropertyIds } },
-          select: { contactId: true, propertyId: true },
-        })
-      : [];
+    // Get owner contacts for these properties
+    owners =
+      validPropertyIds.length > 0
+        ? await prisma.propertyOwnership.findMany({
+            where: { propertyId: { in: validPropertyIds } },
+            select: { contactId: true, propertyId: true },
+          })
+        : [];
 
-  // Merge owner contactIds with target contactIds
-  const ownerContactIds = owners.map((o) => o.contactId);
-  const allContactIds = [...new Set([...contactIds, ...ownerContactIds])];
+    // Merge owner contactIds with target contactIds
+    const ownerContactIds = owners.map((o) => o.contactId);
+    contactIds = [...new Set([...contactIds, ...ownerContactIds])];
+  }
 
   // Build phone query with filters
-  const phoneWhereClause: any = { contact_id: { in: allContactIds } };
+  const phoneWhereClause: any = { contact_id: { in: contactIds } };
 
-  // Build inclusion conditions
-  const inclusionConditions: any[] = [];
+  // Check if we have phone index filters
+  const hasIndexFilters = (phoneFilters?.selectedPhoneIndex?.length ?? 0) > 0;
+  const hasTagOrCallerIdFilters =
+    (phoneFilters?.selectedTags?.length ?? 0) > 0 || (phoneFilters?.selectedCallerIds?.length ?? 0) > 0;
 
-  if (phoneFilters?.selectedTags?.length) {
-    inclusionConditions.push({ phone_tags: { in: phoneFilters.selectedTags } });
-  }
+  // If using OR logic and we have both index and tag/callerId filters,
+  // we need to fetch all phones and apply filters in-memory
+  const shouldFetchAllPhones = phoneFilters?.andOr === "or" && hasIndexFilters && hasTagOrCallerIdFilters;
 
-  if (phoneFilters?.selectedCallerIds?.length) {
-    inclusionConditions.push({ telynxLookup: { caller_id: { in: phoneFilters.selectedCallerIds } } });
-  }
+  if (!shouldFetchAllPhones) {
+    // Build inclusion conditions for database query
+    const inclusionConditions: any[] = [];
 
-  // Apply inclusion conditions based on andOr
-  if (inclusionConditions.length > 0) {
-    if (phoneFilters?.andOr === "or") {
-      phoneWhereClause.OR = inclusionConditions;
-    } else {
-      // AND logic - all conditions must be met
-      phoneWhereClause.AND = inclusionConditions;
+    if (phoneFilters?.selectedTags?.length) {
+      inclusionConditions.push({ phone_tags: { in: phoneFilters.selectedTags } });
+    }
+
+    if (phoneFilters?.selectedCallerIds?.length) {
+      inclusionConditions.push({ telynxLookup: { caller_id: { in: phoneFilters.selectedCallerIds } } });
+    }
+
+    // Apply inclusion conditions based on andOr
+    if (inclusionConditions.length > 0) {
+      if (phoneFilters?.andOr === "or") {
+        phoneWhereClause.OR = inclusionConditions;
+      } else {
+        // AND logic - all conditions must be met
+        phoneWhereClause.AND = inclusionConditions;
+      }
     }
   }
 
@@ -647,44 +664,114 @@ async function createJobTargets(
 
   const contactPhonesRaw = await prisma.contact_phones.findMany({
     where: phoneWhereClause,
-    select: { id: true, contact_id: true, phone_tags: true },
+    select: {
+      id: true,
+      contact_id: true,
+      phone_tags: true,
+      telynxLookup: {
+        select: {
+          caller_id: true,
+        },
+      },
+    },
   });
 
+  console.log(
+    util.inspect(contactPhonesRaw, {
+      depth: null,
+      colors: true,
+    }),
+  );
   // Sort phones by DS tags (DS1, DS2, etc. come first in order)
   const contactPhones = sortContactPhonesByTag(contactPhonesRaw);
 
+  console.log(
+    util.inspect(contactPhones, {
+      depth: null,
+      colors: true,
+    }),
+  );
+
   // Group phones by contact_id for index filtering
-  const phonesByContact = new Map<string, { id: string; contact_id: string; phone_tags: string | null }[]>();
+  type PhoneWithLookup = {
+    id: string;
+    contact_id: string;
+    phone_tags: string | null;
+    telynxLookup?: { caller_id: string | null } | null;
+  };
+  const phonesByContact = new Map<string, PhoneWithLookup[]>();
   for (const phone of contactPhones) {
     if (!phone.contact_id) continue;
     const existing = phonesByContact.get(phone.contact_id) || [];
-    existing.push(phone as { id: string; contact_id: string; phone_tags: string | null });
+    existing.push(phone as PhoneWithLookup);
     phonesByContact.set(phone.contact_id, existing);
   }
 
-  // Apply phone index filters (selected and excluded)
+  // Apply filters (tags, caller IDs, and indices) with proper AND/OR logic
   let filteredPhones: { id: string; contact_id: string }[] = [];
   const selectedIndexSet = phoneFilters?.selectedPhoneIndex?.length ? new Set(phoneFilters.selectedPhoneIndex) : null;
   const excludedIndexSet = phoneFilters?.excludedPhoneIndex?.length ? new Set(phoneFilters.excludedPhoneIndex) : null;
+  const selectedTagsSet = phoneFilters?.selectedTags?.length ? new Set(phoneFilters.selectedTags) : null;
+  const selectedCallerIdsSet = phoneFilters?.selectedCallerIds?.length ? new Set(phoneFilters.selectedCallerIds) : null;
 
   for (const [, phones] of phonesByContact) {
     for (let i = 0; i < phones.length; i++) {
-      // Check if index is selected (if no filter, all are selected)
-      const isSelected = selectedIndexSet ? selectedIndexSet.has(i) : true;
-      // Check if index is excluded
-      const isExcluded = excludedIndexSet ? excludedIndexSet.has(i) : false;
+      const phone = phones[i];
 
-      if (isSelected && !isExcluded) {
-        filteredPhones.push(phones[i]);
+      // Check exclusions first (always AND logic)
+      const isExcludedByIndex = excludedIndexSet ? excludedIndexSet.has(i) : false;
+      if (isExcludedByIndex) continue;
+
+      // If we fetched all phones and need to apply tag/callerId filters in-memory
+      if (shouldFetchAllPhones) {
+        // Check if phone matches any of the selected criteria
+        const matchesTag = selectedTagsSet && phone.phone_tags ? selectedTagsSet.has(phone.phone_tags) : false;
+        const matchesCallerId =
+          selectedCallerIdsSet && phone.telynxLookup?.caller_id
+            ? selectedCallerIdsSet.has(phone.telynxLookup.caller_id)
+            : false;
+        const matchesIndex = selectedIndexSet ? selectedIndexSet.has(i) : false;
+
+        // OR logic: include if matches ANY criterion
+        if (phoneFilters?.andOr === "or") {
+          const hasTagFilter = (selectedTagsSet?.size ?? 0) > 0;
+          const hasCallerIdFilter = (selectedCallerIdsSet?.size ?? 0) > 0;
+          const hasIndexFilter = (selectedIndexSet?.size ?? 0) > 0;
+
+          const shouldInclude =
+            (hasTagFilter && matchesTag) || (hasCallerIdFilter && matchesCallerId) || (hasIndexFilter && matchesIndex);
+
+          if (shouldInclude) {
+            filteredPhones.push(phone);
+          }
+        }
+      } else {
+        // Database already filtered by tag/callerId, just check index
+        const matchesIndex = selectedIndexSet ? selectedIndexSet.has(i) : true;
+
+        if (phoneFilters?.andOr === "or") {
+          // If OR logic and no index filter, include all (already filtered by DB)
+          // If OR logic and has index filter, include if matches index
+          if (!selectedIndexSet || matchesIndex) {
+            filteredPhones.push(phone);
+          }
+        } else {
+          // AND logic: must match index filter (if present)
+          if (matchesIndex) {
+            filteredPhones.push(phone);
+          }
+        }
       }
     }
   }
 
   // Map contactId -> propertyId
   const propertyByContact = new Map(targets.map((t) => [t.contactId, t.propertyId]));
-  for (const owner of owners) {
-    if (!propertyByContact.has(owner.contactId)) {
-      propertyByContact.set(owner.contactId, owner.propertyId);
+  if (!isExpandedSelected && owners) {
+    for (const owner of owners) {
+      if (!propertyByContact.has(owner.contactId)) {
+        propertyByContact.set(owner.contactId, owner.propertyId);
+      }
     }
   }
 
@@ -878,6 +965,7 @@ router.post("/sms-drip-manual", async (req, res) => {
       timeSlots = [],
       targetIds,
       filters,
+      isExpandedSelected,
     } = body;
 
     const { phoneFilters } = filters || {};
@@ -927,7 +1015,12 @@ router.post("/sms-drip-manual", async (req, res) => {
       parsedTimeSlots,
     });
     await createJobMessages(jobId, messages);
-    const { targetsCreated, contactsWithoutMatchingPhones } = await createJobTargets(jobId, targets, phoneFilters);
+    const { targetsCreated, contactsWithoutMatchingPhones } = await createJobTargets(
+      jobId,
+      targets,
+      phoneFilters,
+      isExpandedSelected,
+    );
     const { inSlot } = await finalizeJobStatus(jobId, parsedTimeSlots);
 
     return res.status(inSlot ? 201 : 200).json({

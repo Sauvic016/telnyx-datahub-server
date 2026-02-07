@@ -24,6 +24,60 @@ interface PhoneToValidate {
   phoneTag: string;
 }
 
+const MAX_PHONES_PER_CONTACT = 3;
+
+/**
+ * Saves phones for a contact with a hard cap of MAX_PHONES_PER_CONTACT total in the DB.
+ * Updates existing phones (matched by last 10 digits) without counting toward the cap.
+ * Only creates new phones if the contact has fewer than the cap.
+ */
+async function saveContactPhonesCapped(
+  tx: any,
+  contactId: string,
+  phones: { phonenumber?: string; phonetype?: string }[],
+): Promise<number> {
+  const existingCount = await tx.contact_phones.count({
+    where: { contact_id: contactId },
+  });
+
+  let savedCount = 0;
+  let currentTotal = existingCount;
+
+  for (const phone of phones) {
+    if (!phone.phonenumber) continue;
+    const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
+    const last10 = formattedNumber.slice(-10);
+
+    const existing = await tx.contact_phones.findFirst({
+      where: {
+        contact_id: contactId,
+        phone_number: { endsWith: last10 },
+      },
+    });
+
+    if (existing) {
+      await tx.contact_phones.update({
+        where: { id: existing.id },
+        data: { phone_type: phone.phonetype, phone_number: formattedNumber },
+      });
+      savedCount++;
+    } else if (currentTotal < MAX_PHONES_PER_CONTACT) {
+      await tx.contact_phones.create({
+        data: {
+          id: crypto.randomUUID(),
+          contact_id: contactId,
+          phone_number: formattedNumber,
+          phone_type: phone.phonetype,
+        },
+      });
+      currentTotal++;
+      savedCount++;
+    }
+  }
+
+  return savedCount;
+}
+
 export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
   if (!results || !Array.isArray(results)) {
     console.warn("[SkipTraceProcessing] No valid results to process");
@@ -243,8 +297,8 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
             { strict: false },
           );
         } else {
-          // No phones to validate - still update pipeline with contactId and propertyDetailsId
-          console.log(`[SkipTraceProcessing] No phones to validate, updating pipeline with contact and property IDs`);
+          // No phones to validate - mark as failed and update pipeline with contactId and propertyDetailsId
+          console.log(`[SkipTraceProcessing] No phones to validate, marking NUMBERLOOKUP_FAILED`);
           await prisma.pipeline.update({
             where: {
               ownerId_propertyId: {
@@ -253,11 +307,21 @@ export const processSkipTraceResponse = async (results: IWebhookResult[]) => {
               },
             },
             data: {
+              stage: ProcessingStage.NUMBERLOOKUP_FAILED,
               contactId: contactMap.mainContactId,
               propertyDetailsId,
               updatedAt: new Date(),
             },
           });
+          await Owner.updateOne(
+            { _id: ownerId },
+            {
+              $set: {
+                stage: ProcessingStage.NUMBERLOOKUP_FAILED,
+              },
+            },
+            { strict: false },
+          );
         }
       } catch (err) {
         console.error(`[SkipTraceProcessing] Error processing row ${result.identityKey}:`, err);
@@ -394,44 +458,14 @@ const saveDirectSkipContacts = async (
 
           processedContactIds.add(contact!.id);
 
-          // Save main contact's phones (without validation) so they exist in the database
-          // Limit to first 3 phones
-          const contactPhones = (contactData.phones || []).slice(0, 3);
+          // Save main contact's phones (without validation) - capped at 3 total per contact
+          const contactPhones = (contactData.phones || []).slice(0, MAX_PHONES_PER_CONTACT);
           if (contactPhones.length > 0) {
             const contactId = contact!.id;
-            await prisma.$transaction(async (tx) => {
-              for (const phone of contactPhones) {
-                if (!phone.phonenumber) continue;
-                const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
-                const last10 = formattedNumber.slice(-10);
-                const existing = await tx.contact_phones.findFirst({
-                  where: {
-                    contact_id: contactId,
-                    phone_number: {
-                      endsWith: last10,
-                    },
-                  },
-                });
-
-                if (existing) {
-                  await tx.contact_phones.update({
-                    where: { id: existing.id },
-                    data: { phone_type: phone.phonetype, phone_number: formattedNumber },
-                  });
-                } else {
-                  const phoneId = crypto.randomUUID();
-                  await tx.contact_phones.create({
-                    data: {
-                      id: phoneId,
-                      contact_id: contactId,
-                      phone_number: formattedNumber,
-                      phone_type: phone.phonetype,
-                    },
-                  });
-                }
-              }
+            const savedCount = await prisma.$transaction(async (tx) => {
+              return saveContactPhonesCapped(tx, contactId, contactPhones);
             });
-            console.log(`[SaveContacts] Saved ${contactPhones.length} phones for contact ${contactId}`);
+            console.log(`[SaveContacts] Saved ${savedCount} phones for contact ${contactId} (capped at ${MAX_PHONES_PER_CONTACT})`);
           }
         } else {
           console.log(`[SaveContacts] Skipping update for duplicate contact ${contact!.id} in batch`);
@@ -487,41 +521,12 @@ const saveDirectSkipContacts = async (
                 console.log(`[SaveContacts] Created relative ${relativeContact.id}: ${relFirstName} ${relLastName}`);
               }
 
-              // Save phones for relative (both new and existing relatives)
+              // Save phones for relative - capped at 3 total per contact
               if (relPhoneNumbers.length > 0) {
-                await prisma.$transaction(async (tx) => {
-                  for (const phone of relPhoneNumbers) {
-                    if (!phone.phonenumber) continue;
-                    const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
-                    const last10 = formattedNumber.slice(-10);
-                    const existing = await tx.contact_phones.findFirst({
-                      where: {
-                        contact_id: relativeContact!.id,
-                        phone_number: {
-                          endsWith: last10,
-                        },
-                      },
-                    });
-
-                    if (existing) {
-                      await tx.contact_phones.update({
-                        where: { id: existing.id },
-                        data: { phone_type: phone.phonetype, phone_number: formattedNumber },
-                      });
-                    } else {
-                      const phoneId = crypto.randomUUID();
-                      await tx.contact_phones.create({
-                        data: {
-                          id: phoneId,
-                          contact_id: relativeContact!.id,
-                          phone_number: formattedNumber,
-                          phone_type: phone.phonetype,
-                        },
-                      });
-                    }
-                  }
+                const savedCount = await prisma.$transaction(async (tx) => {
+                  return saveContactPhonesCapped(tx, relativeContact!.id, relPhoneNumbers);
                 });
-                console.log(`[SaveContacts] Saved ${relPhoneNumbers.length} phones for relative ${relativeContact.id}`);
+                console.log(`[SaveContacts] Saved ${savedCount} phones for relative ${relativeContact.id} (capped at ${MAX_PHONES_PER_CONTACT})`);
               }
 
               // Store relative mapping
@@ -1077,43 +1082,14 @@ export const resolveOwnershipContacts = async (
     }
   }
 
-  // Save first 3 owner2 phones to database (regardless of validation)
-  const owner2PhonesToSave = owner2Phones.slice(0, 3);
+  // Save owner2 phones to database - capped at 3 total per contact
+  const owner2PhonesToSave = owner2Phones.slice(0, MAX_PHONES_PER_CONTACT);
   if (owner2PhonesToSave.length > 0) {
     result.owner2HasPhones = true;
-    await prisma.$transaction(async (tx) => {
-      for (const phone of owner2PhonesToSave) {
-        if (!phone.phonenumber) continue;
-        const formattedNumber = normalizeUSPhoneNumber(phone.phonenumber);
-        const last10 = formattedNumber.slice(-10);
-        const existing = await tx.contact_phones.findFirst({
-          where: {
-            contact_id: owner2Contact!.id,
-            phone_number: {
-              endsWith: last10,
-            },
-          },
-        });
-
-        if (existing) {
-          await tx.contact_phones.update({
-            where: { id: existing.id },
-            data: { phone_type: phone.phonetype, phone_number: formattedNumber },
-          });
-        } else {
-          const phoneId = crypto.randomUUID();
-          await tx.contact_phones.create({
-            data: {
-              id: phoneId,
-              contact_id: owner2Contact!.id,
-              phone_number: formattedNumber,
-              phone_type: phone.phonetype,
-            },
-          });
-        }
-      }
+    const savedCount = await prisma.$transaction(async (tx) => {
+      return saveContactPhonesCapped(tx, owner2Contact!.id, owner2PhonesToSave);
     });
-    console.log(`[Ownership] Saved ${owner2PhonesToSave.length} phones for owner2 ${owner2Contact.id}`);
+    console.log(`[Ownership] Saved ${savedCount} phones for owner2 ${owner2Contact.id} (capped at ${MAX_PHONES_PER_CONTACT})`);
 
     // Add first 2 phones for validation
     const phonesToValidate = owner2Phones.slice(0, 2);
